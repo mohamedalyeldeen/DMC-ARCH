@@ -45,7 +45,7 @@
       }
       document.getElementById('authOverlay').classList.add('open');
     }catch(e){
-      document.getElementById('loadingScreen').textContent = 'Could not reach the Nexus server. Check that it is running.';
+      document.getElementById('loadingScreen').textContent = 'Could not reach the Click server. Check that it is running.';
     }
   }
 
@@ -223,7 +223,7 @@
     const el = document.getElementById('sidebar');
     if(isLeaderLike()){
       el.innerHTML = `
-        <div class="brand">Nex<span>us</span></div>
+        <div class="brand">Cli<span>ck</span></div>
         <div class="brand-sub">Team task ledger</div>
         <div class="side-section">
           <div class="side-label"><span>Teams</span>${canManageMembers()?'<button class="ghost-btn" id="addMemberBtn" style="padding:3px 8px;">+ Member</button>':''}</div>
@@ -247,7 +247,7 @@
     } else {
       const team = teamById(session.teamId);
       el.innerHTML = `
-        <div class="brand">Nex<span>us</span></div>
+        <div class="brand">Cli<span>ck</span></div>
         <div class="brand-sub">Team task ledger</div>
         <div class="info-panel">
           Signed in as<br><b>${escapeHtml(session.name)}</b><br>
