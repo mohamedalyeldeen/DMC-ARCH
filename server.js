@@ -6,6 +6,7 @@ const crypto = require('crypto');
 const path = require('path');
 const { readTab, updateTab, getConfig, setConfig } = require('./lib/sheets');
 const { sign, requireAuth, requireLeader, requireOwner, isLeader } = require('./lib/auth');
+const { sendMail, taskAssignedEmail } = require('./lib/mailer');
 
 const app = express();
 app.use(cors());
@@ -29,6 +30,22 @@ function sendErr(res, e) {
   };
   console.error(e);
   res.status(status).json({ error: messages[e.message] || 'Something went wrong.' });
+}
+
+async function notifyAssignment(task, actor) {
+  try {
+    const members = await readTab('Members');
+    const member = members.find(m => m.id === task.assignee);
+    if (!member || !member.email) return;
+    const assignedBy = actor.role === 'owner' ? 'The board owner' : (actor.name || 'A team leader');
+    const { subject, text, html } = taskAssignedEmail({
+      memberName: member.name, taskTitle: task.title, description: task.description,
+      priority: task.priority, due: task.due, assignedBy
+    });
+    await sendMail({ to: member.email, subject, text, html });
+  } catch (e) {
+    console.error('notifyAssignment failed:', e.message);
+  }
 }
 
 // ---------- AUTH ----------
@@ -144,7 +161,7 @@ app.put('/api/teams/:id', requireAuth, requireOwner, async (req, res) => {
 // ---------- MEMBERS ----------
 app.post('/api/members', requireAuth, requireOwner, async (req, res) => {
   try {
-    const { name, username, password, teamId, isTeamLead, reportsTo } = req.body;
+    const { name, username, password, teamId, isTeamLead, reportsTo, email } = req.body;
     if (!name || !username || !password || !teamId) throw new Error('BAD_REQUEST');
     const hash = await bcrypt.hash(password, 10);
     let newMember;
@@ -153,7 +170,7 @@ app.post('/api/members', requireAuth, requireOwner, async (req, res) => {
       newMember = {
         id: genId('m'), name, username: username.trim(), passwordHash: hash,
         teamId, color: COLORS[rows.length % COLORS.length], isTeamLead: !!isTeamLead,
-        reportsTo: isTeamLead ? '' : (reportsTo || '')
+        reportsTo: isTeamLead ? '' : (reportsTo || ''), email: (email || '').trim()
       };
       rows.push(newMember);
       return rows;
@@ -165,7 +182,7 @@ app.post('/api/members', requireAuth, requireOwner, async (req, res) => {
 
 app.put('/api/members/:id', requireAuth, requireOwner, async (req, res) => {
   try {
-    const { name, username, password, teamId, isTeamLead, reportsTo } = req.body;
+    const { name, username, password, teamId, isTeamLead, reportsTo, email } = req.body;
     let updated;
     await updateTab('Members', async rows => {
       const m = rows.find(r => r.id === req.params.id);
@@ -177,6 +194,7 @@ app.put('/api/members/:id', requireAuth, requireOwner, async (req, res) => {
       if (teamId) m.teamId = teamId;
       m.isTeamLead = !!isTeamLead;
       m.reportsTo = m.isTeamLead ? '' : (reportsTo || '');
+      if (email !== undefined) m.email = (email || '').trim();
       updated = m;
       return rows;
     });
@@ -211,6 +229,7 @@ app.post('/api/tasks', requireAuth, requireLeader, async (req, res) => {
     };
     await updateTab('Tasks', rows => { rows.push(newTask); return rows; });
     res.json(newTask);
+    if (newTask.assignee) notifyAssignment(newTask, req.user);
   } catch (e) { sendErr(res, e); }
 });
 
@@ -220,6 +239,7 @@ app.put('/api/tasks/:id', requireAuth, requireLeader, async (req, res) => {
     let membersCache = null;
     if (req.user.role !== 'owner') membersCache = await readTab('Members');
     let updated;
+    let wasReassigned = false;
     await updateTab('Tasks', rows => {
       const t = rows.find(r => r.id === req.params.id);
       if (!t) throw new Error('NOT_FOUND');
@@ -233,13 +253,16 @@ app.put('/api/tasks/:id', requireAuth, requireLeader, async (req, res) => {
       }
       if (title) t.title = title;
       t.description = description || '';
+      const prevAssignee = t.assignee;
       t.assignee = assignee || '';
       if (priority) t.priority = priority;
       t.due = due || '';
       updated = t;
+      wasReassigned = !!(t.assignee && t.assignee !== prevAssignee);
       return rows;
     });
     res.json(updated);
+    if (wasReassigned) notifyAssignment(updated, req.user);
   } catch (e) { sendErr(res, e); }
 });
 

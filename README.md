@@ -120,3 +120,38 @@ section 5 over Vercel.
   state.
 - The app's sidebar also has an "Export snapshot" button that downloads the
   current board as a `.json` file for an extra manual backup.
+
+## Task assignment email notifications
+
+Whenever the owner or a team leader assigns a task to someone (or reassigns an
+existing task to a different person), that person gets an email if you've set
+their **company email** in the "+ Member" / edit-member form and configured
+the mailbox below.
+
+**Setup:**
+1. Add these to your `.env` (replace with a real mailbox in your company's Microsoft 365 tenant):
+   ```
+   SMTP_HOST=smtp.office365.com
+   SMTP_PORT=587
+   SMTP_USER=nexus-notifications@yourcompany.com
+   SMTP_PASS=the-mailbox-password
+   SMTP_FROM_NAME=Nexus
+   ```
+2. When adding/editing a team member, fill in their **Company email** (e.g.
+   `Mohamed.M.Gad@dmc-curve.com`) so notifications have somewhere to go.
+3. That's it — assigning or reassigning a task now sends them an email automatically.
+
+**Important caveat about this method:** this uses "Basic Auth" (plain
+username + password) to send through Outlook. Microsoft has announced it will
+disable this by default for most company tenants by the **end of December
+2026** (their timeline has shifted before, so treat this as an estimate, not
+a guarantee). When that happens, email sending will start failing with an
+authentication error, and someone will need to either have your IT admin
+re-enable Basic Auth for this mailbox, or migrate this to Microsoft Graph API
+with an OAuth app registration instead (a more involved but longer-lasting
+setup — ask if you want that built later).
+
+If your company's mailbox requires multi-factor authentication, you may need
+an **app password** for `SMTP_PASS` instead of the normal login password —
+ask whoever manages your Microsoft 365 admin account to generate one.
+
