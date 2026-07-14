@@ -369,6 +369,7 @@
       document.getElementById('mmName').value = m.name;
       document.getElementById('mmUsername').value = m.username;
       document.getElementById('mmPassword').value = '';
+      document.getElementById('mmEmail').value = m.email || '';
       teamSel.value = m.teamId;
       document.getElementById('mmLead').checked = !!m.isTeamLead;
       populateReportsToOptions(m.teamId, m.reportsTo);
@@ -395,13 +396,14 @@
     const teamId = document.getElementById('mmTeam').value;
     const isTeamLead = document.getElementById('mmLead').checked;
     const reportsTo = document.getElementById('mmReportsTo').value;
+    const email = document.getElementById('mmEmail').value.trim();
     if(!name || !username) return;
     if(!id && !password){ alert('Set a password for the new member.'); return; }
     try{
       if(id){
-        await api('PUT', '/api/members/'+id, {name, username, password, teamId, isTeamLead, reportsTo});
+        await api('PUT', '/api/members/'+id, {name, username, password, teamId, isTeamLead, reportsTo, email});
       } else {
-        await api('POST', '/api/members', {name, username, password, teamId, isTeamLead, reportsTo});
+        await api('POST', '/api/members', {name, username, password, teamId, isTeamLead, reportsTo, email});
       }
       closeMemberModal();
       await refreshState();
