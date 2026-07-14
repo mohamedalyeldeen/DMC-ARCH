@@ -228,8 +228,8 @@ app.post('/api/tasks', requireAuth, requireLeader, async (req, res) => {
       history: [{ status: 'todo', at: today() }], createdAt: today()
     };
     await updateTab('Tasks', rows => { rows.push(newTask); return rows; });
+    if (newTask.assignee) await notifyAssignment(newTask, req.user);
     res.json(newTask);
-    if (newTask.assignee) notifyAssignment(newTask, req.user);
   } catch (e) { sendErr(res, e); }
 });
 
@@ -261,8 +261,8 @@ app.put('/api/tasks/:id', requireAuth, requireLeader, async (req, res) => {
       wasReassigned = !!(t.assignee && t.assignee !== prevAssignee);
       return rows;
     });
+    if (wasReassigned) await notifyAssignment(updated, req.user);
     res.json(updated);
-    if (wasReassigned) notifyAssignment(updated, req.user);
   } catch (e) { sendErr(res, e); }
 });
 
