@@ -137,9 +137,18 @@
   function isLeaderLike(){ return isOwner() || isTeamLead(); }
   function canManageMembers(){ return isOwner(); }
   function canManageTasks(){ return isLeaderLike(); }
-  function canApproveOrSendBack(){ return isLeaderLike(); }
+  function isMyReport(memberId){
+    if(isOwner()) return true;
+    const m = memberById(memberId);
+    return !!(m && m.reportsTo === session.id);
+  }
+  function canManageThisTask(t){
+    if(isOwner()) return true;
+    if(isTeamLead()) return isMyReport(t.assignee);
+    return false;
+  }
   function canAdvance(task, fromIdx){
-    if(isLeaderLike()) return true;
+    if(canManageThisTask(task)) return true;
     return session && task.assignee===session.id && fromIdx < 2;
   }
   function memberById(id){ return state.members.find(m=>m.id===id); }
@@ -326,6 +335,25 @@
   }
 
   // ---------- MEMBER MODAL ----------
+  function populateReportsToOptions(teamId, selected){
+    const sel = document.getElementById('mmReportsTo');
+    const leaders = state.members.filter(m=>m.isTeamLead && m.teamId===teamId);
+    if(leaders.length===0){
+      sel.innerHTML = '<option value="">No team leader on this team yet</option>';
+    } else {
+      sel.innerHTML = '<option value="">Not assigned</option>' + leaders.map(l=>`<option value="${l.id}">${escapeHtml(l.name)}</option>`).join('');
+    }
+    sel.value = selected || '';
+  }
+  function toggleReportsToVisibility(){
+    const isLead = document.getElementById('mmLead').checked;
+    document.getElementById('reportsToField').style.display = isLead ? 'none' : 'block';
+  }
+  document.getElementById('mmLead').addEventListener('change', toggleReportsToVisibility);
+  document.getElementById('mmTeam').addEventListener('change', (e)=>{
+    populateReportsToOptions(e.target.value, '');
+  });
+
   function openMemberModal(memberId){
     modalOpenFlag = true;
     const form = document.getElementById('memberForm');
@@ -343,12 +371,15 @@
       document.getElementById('mmPassword').value = '';
       teamSel.value = m.teamId;
       document.getElementById('mmLead').checked = !!m.isTeamLead;
+      populateReportsToOptions(m.teamId, m.reportsTo);
     } else {
       document.getElementById('memberModalTitle').textContent = 'Add team member';
       document.getElementById('saveMemberBtn').textContent = 'Add member';
       document.getElementById('deleteMemberBtn').style.display='none';
       document.getElementById('mmLead').checked = false;
+      populateReportsToOptions(teamSel.value, '');
     }
+    toggleReportsToVisibility();
     document.getElementById('memberModalOverlay').classList.add('open');
   }
   function closeMemberModal(){ document.getElementById('memberModalOverlay').classList.remove('open'); modalOpenFlag = false; }
@@ -363,13 +394,14 @@
     const password = document.getElementById('mmPassword').value;
     const teamId = document.getElementById('mmTeam').value;
     const isTeamLead = document.getElementById('mmLead').checked;
+    const reportsTo = document.getElementById('mmReportsTo').value;
     if(!name || !username) return;
     if(!id && !password){ alert('Set a password for the new member.'); return; }
     try{
       if(id){
-        await api('PUT', '/api/members/'+id, {name, username, password, teamId, isTeamLead});
+        await api('PUT', '/api/members/'+id, {name, username, password, teamId, isTeamLead, reportsTo});
       } else {
-        await api('POST', '/api/members', {name, username, password, teamId, isTeamLead});
+        await api('POST', '/api/members', {name, username, password, teamId, isTeamLead, reportsTo});
       }
       closeMemberModal();
       await refreshState();
@@ -437,8 +469,8 @@
     let dots=''; for(let i=0;i<COLUMNS.length;i++){ dots += `<span class="${i<=colIdx?'done':''}"></span>`; }
 
     const canFwd = colIdx<COLUMNS.length-1 && canAdvance(t, colIdx);
-    const canBack = colIdx>0 && canApproveOrSendBack();
-    const canEdit = canManageTasks();
+    const canBack = colIdx>0 && canManageThisTask(t);
+    const canEdit = canManageThisTask(t);
 
     el.innerHTML = `
       <div class="ticket-stub">
@@ -486,12 +518,14 @@
   // ---------- TASK MODAL ----------
   function fillAssigneeOptions(selected){
     const sel = document.getElementById('fAssignee');
-    let html = '<option value="">Unassigned</option>';
+    let html = isOwner() ? '<option value="">Unassigned</option>' : '';
     state.teams.forEach(team=>{
-      const members = state.members.filter(m=>m.teamId===team.id);
+      let members = state.members.filter(m=>m.teamId===team.id);
+      if(!isOwner()) members = members.filter(m=> m.reportsTo===session.id);
       if(members.length===0) return;
       html += `<optgroup label="${escapeHtml(team.name)}">` + members.map(m=>`<option value="${m.id}">${escapeHtml(m.name)}</option>`).join('') + '</optgroup>';
     });
+    if(!html) html = '<option value="">No one reports to you yet</option>';
     sel.innerHTML = html;
     sel.value = selected || '';
   }
@@ -571,7 +605,8 @@
     const el = document.getElementById('dashboardView');
     if(isLeaderLike()){
       const pool = state.dashboardTasks || state.tasks;
-      let rows = state.members.map(m=>{
+      const visibleMembers = isOwner() ? state.members : state.members.filter(m=>m.reportsTo===session.id);
+      let rows = visibleMembers.map(m=>{
         const s = memberStats(m.id, pool);
         const pct = s.completed>0 ? Math.round((s.onTime/s.completed)*100) : 0;
         const team = teamById(m.teamId);
