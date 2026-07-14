@@ -1,7 +1,7 @@
 {
-  "name": "nexus-task-server",
+  "name": "click-task-server",
   "version": "1.0.0",
-  "description": "Nexus team task tracker - Node.js server backed by Google Sheets",
+  "description": "Click team task tracker - Node.js server backed by Google Sheets",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"

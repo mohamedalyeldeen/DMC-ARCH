@@ -320,6 +320,6 @@ app.post('/api/tasks/:id/move', requireAuth, async (req, res) => {
 
 const PORT = process.env.PORT || 3000;
 if (require.main === module) {
-  app.listen(PORT, () => console.log(`Nexus server running on port ${PORT}`));
+  app.listen(PORT, () => console.log(`Click server running on port ${PORT}`));
 }
 module.exports = app;

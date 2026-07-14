@@ -1,4 +1,4 @@
-# Nexus — Team Task Tracker
+# Click — Team Task Tracker
 
 A Kanban-style task tracker with team hierarchy, role-based permissions, and a
 performance dashboard. This version runs as a real Node.js server so it can
@@ -135,7 +135,7 @@ the mailbox below.
    SMTP_PORT=587
    SMTP_USER=nexus-notifications@yourcompany.com
    SMTP_PASS=the-mailbox-password
-   SMTP_FROM_NAME=Nexus
+   SMTP_FROM_NAME=Click
    ```
 2. When adding/editing a team member, fill in their **Company email** (e.g.
    `Mohamed.M.Gad@dmc-curve.com`) so notifications have somewhere to go.
