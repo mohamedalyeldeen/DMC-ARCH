@@ -47,6 +47,15 @@ app.post('/api/auth/setup', async (req, res) => {
     if (!password || password.length < 3) return res.status(400).json({ error: 'Choose a password with at least 3 characters.' });
     const h = await bcrypt.hash(password, 10);
     await setConfig('ownerPasswordHash', h);
+    const existingTeams = await readTab('Teams');
+    if (existingTeams.length === 0) {
+      await updateTab('Teams', () => ([
+        { id: 'team1', name: 'Team Alpha', color: '#E2892B' },
+        { id: 'team2', name: 'Team Beta', color: '#3E7C74' },
+        { id: 'team3', name: 'Team Gamma', color: '#7C6AA6' },
+        { id: 'team4', name: 'Team Delta', color: '#4C7EA8' }
+      ]));
+    }
     const token = sign({ role: 'owner' });
     res.json({ token, role: 'owner', name: 'You (Owner)' });
   } catch (e) { sendErr(res, e); }
@@ -101,8 +110,18 @@ app.get('/api/state', requireAuth, async (req, res) => {
     const [teams, membersRaw, tasksAll] = await Promise.all([readTab('Teams'), readTab('Members'), readTab('Tasks')]);
     const members = membersRaw.map(({ passwordHash, ...rest }) => rest);
     const leader = isLeader(req.user);
-    const tasks = leader ? tasksAll : tasksAll.filter(t => t.assignee === req.user.id);
-    const dashboardTasks = leader ? tasksAll : tasksAll.filter(t => t.assignee === req.user.id);
+    let tasks, dashboardTasks;
+    if (req.user.role === 'owner') {
+      tasks = tasksAll;
+      dashboardTasks = tasksAll;
+    } else if (req.user.isTeamLead) {
+      const myReportIds = new Set(membersRaw.filter(m => m.reportsTo === req.user.id).map(m => m.id));
+      tasks = tasksAll; // team leaders can still browse the whole board
+      dashboardTasks = tasksAll.filter(t => myReportIds.has(t.assignee));
+    } else {
+      tasks = tasksAll.filter(t => t.assignee === req.user.id);
+      dashboardTasks = tasks;
+    }
     res.json({ teams, members, tasks, dashboardTasks, you: req.user });
   } catch (e) { sendErr(res, e); }
 });
@@ -125,7 +144,7 @@ app.put('/api/teams/:id', requireAuth, requireOwner, async (req, res) => {
 // ---------- MEMBERS ----------
 app.post('/api/members', requireAuth, requireOwner, async (req, res) => {
   try {
-    const { name, username, password, teamId, isTeamLead } = req.body;
+    const { name, username, password, teamId, isTeamLead, reportsTo } = req.body;
     if (!name || !username || !password || !teamId) throw new Error('BAD_REQUEST');
     const hash = await bcrypt.hash(password, 10);
     let newMember;
@@ -133,7 +152,8 @@ app.post('/api/members', requireAuth, requireOwner, async (req, res) => {
       if (rows.find(r => r.username.toLowerCase() === username.trim().toLowerCase())) throw new Error('USERNAME_TAKEN');
       newMember = {
         id: genId('m'), name, username: username.trim(), passwordHash: hash,
-        teamId, color: COLORS[rows.length % COLORS.length], isTeamLead: !!isTeamLead
+        teamId, color: COLORS[rows.length % COLORS.length], isTeamLead: !!isTeamLead,
+        reportsTo: isTeamLead ? '' : (reportsTo || '')
       };
       rows.push(newMember);
       return rows;
@@ -145,7 +165,7 @@ app.post('/api/members', requireAuth, requireOwner, async (req, res) => {
 
 app.put('/api/members/:id', requireAuth, requireOwner, async (req, res) => {
   try {
-    const { name, username, password, teamId, isTeamLead } = req.body;
+    const { name, username, password, teamId, isTeamLead, reportsTo } = req.body;
     let updated;
     await updateTab('Members', async rows => {
       const m = rows.find(r => r.id === req.params.id);
@@ -156,6 +176,7 @@ app.put('/api/members/:id', requireAuth, requireOwner, async (req, res) => {
       if (password) m.passwordHash = await bcrypt.hash(password, 10);
       if (teamId) m.teamId = teamId;
       m.isTeamLead = !!isTeamLead;
+      m.reportsTo = m.isTeamLead ? '' : (reportsTo || '');
       updated = m;
       return rows;
     });
@@ -177,6 +198,12 @@ app.post('/api/tasks', requireAuth, requireLeader, async (req, res) => {
   try {
     const { title, description, assignee, priority, due } = req.body;
     if (!title) throw new Error('BAD_REQUEST');
+    if (req.user.role !== 'owner') {
+      if (!assignee) throw new Error('FORBIDDEN');
+      const members = await readTab('Members');
+      const target = members.find(m => m.id === assignee);
+      if (!target || target.reportsTo !== req.user.id) throw new Error('FORBIDDEN');
+    }
     const newTask = {
       id: genId('t'), title, description: description || '', assignee: assignee || '',
       priority: priority || 'M', due: due || '', status: 'todo', completedAt: '',
@@ -190,10 +217,20 @@ app.post('/api/tasks', requireAuth, requireLeader, async (req, res) => {
 app.put('/api/tasks/:id', requireAuth, requireLeader, async (req, res) => {
   try {
     const { title, description, assignee, priority, due } = req.body;
+    let membersCache = null;
+    if (req.user.role !== 'owner') membersCache = await readTab('Members');
     let updated;
     await updateTab('Tasks', rows => {
       const t = rows.find(r => r.id === req.params.id);
       if (!t) throw new Error('NOT_FOUND');
+      if (req.user.role !== 'owner') {
+        const currentTarget = membersCache.find(m => m.id === t.assignee);
+        if (!currentTarget || currentTarget.reportsTo !== req.user.id) throw new Error('FORBIDDEN');
+        if (assignee) {
+          const newTarget = membersCache.find(m => m.id === assignee);
+          if (!newTarget || newTarget.reportsTo !== req.user.id) throw new Error('FORBIDDEN');
+        }
+      }
       if (title) t.title = title;
       t.description = description || '';
       t.assignee = assignee || '';
@@ -208,7 +245,17 @@ app.put('/api/tasks/:id', requireAuth, requireLeader, async (req, res) => {
 
 app.delete('/api/tasks/:id', requireAuth, requireLeader, async (req, res) => {
   try {
-    await updateTab('Tasks', rows => rows.filter(r => r.id !== req.params.id));
+    let membersCache = null;
+    if (req.user.role !== 'owner') membersCache = await readTab('Members');
+    await updateTab('Tasks', rows => {
+      if (req.user.role !== 'owner') {
+        const t = rows.find(r => r.id === req.params.id);
+        if (!t) throw new Error('NOT_FOUND');
+        const currentTarget = membersCache.find(m => m.id === t.assignee);
+        if (!currentTarget || currentTarget.reportsTo !== req.user.id) throw new Error('FORBIDDEN');
+      }
+      return rows.filter(r => r.id !== req.params.id);
+    });
     res.json({ ok: true });
   } catch (e) { sendErr(res, e); }
 });
@@ -218,17 +265,23 @@ app.post('/api/tasks/:id/move', requireAuth, async (req, res) => {
     const { status } = req.body;
     const toIdx = COLUMN_ORDER.indexOf(status);
     if (toIdx < 0) throw new Error('BAD_REQUEST');
+    let membersCache = null;
+    if (req.user.role === 'member' && req.user.isTeamLead) membersCache = await readTab('Members');
     let result;
     await updateTab('Tasks', rows => {
       const t = rows.find(r => r.id === req.params.id);
       if (!t) throw new Error('NOT_FOUND');
       const fromIdx = COLUMN_ORDER.indexOf(t.status);
-      const leader = isLeader(req.user);
+      let isLeaderForThis = req.user.role === 'owner';
+      if (!isLeaderForThis && req.user.isTeamLead) {
+        const target = membersCache.find(m => m.id === t.assignee);
+        isLeaderForThis = !!(target && target.reportsTo === req.user.id);
+      }
       if (toIdx > fromIdx) {
-        const canAdvance = leader || (req.user.id === t.assignee && fromIdx < 2);
+        const canAdvance = isLeaderForThis || (req.user.id === t.assignee && fromIdx < 2);
         if (!canAdvance) throw new Error('FORBIDDEN');
       } else if (toIdx < fromIdx) {
-        if (!leader) throw new Error('FORBIDDEN');
+        if (!isLeaderForThis) throw new Error('FORBIDDEN');
       } else {
         return rows;
       }
