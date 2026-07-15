@@ -151,9 +151,13 @@ app.post('/api/auth/change-password', requireAuth, async (req, res) => {
 // ---------- STATE ----------
 app.get('/api/state', requireAuth, async (req, res) => {
   try {
-    const [teams, membersRaw, tasksAll, notificationsAll] = await Promise.all([
-      readTab('Teams'), readTab('Members'), readTab('Tasks'), readTab('Notifications')
-    ]);
+    const [teams, membersRaw, tasksAll] = await Promise.all([readTab('Teams'), readTab('Members'), readTab('Tasks')]);
+    let notificationsAll = [];
+    try {
+      notificationsAll = await readTab('Notifications');
+    } catch (e) {
+      console.error('Notifications tab unavailable (has it been created in the Sheet yet?):', e.message);
+    }
     const members = membersRaw.map(({ passwordHash, ...rest }) => rest);
     const leader = isLeader(req.user);
     let tasks, dashboardTasks;
@@ -181,11 +185,15 @@ app.get('/api/state', requireAuth, async (req, res) => {
 app.post('/api/notifications/:id/read', requireAuth, async (req, res) => {
   try {
     if (req.user.role === 'owner') return res.json({ ok: true }); // owner has no notifications
-    await updateTab('Notifications', rows => {
-      const n = rows.find(r => r.id === req.params.id && r.userId === req.user.id);
-      if (n) n.read = true;
-      return rows;
-    });
+    try {
+      await updateTab('Notifications', rows => {
+        const n = rows.find(r => r.id === req.params.id && r.userId === req.user.id);
+        if (n) n.read = true;
+        return rows;
+      });
+    } catch (e) {
+      console.error('Notifications tab unavailable:', e.message);
+    }
     res.json({ ok: true });
   } catch (e) { sendErr(res, e); }
 });
@@ -193,10 +201,14 @@ app.post('/api/notifications/:id/read', requireAuth, async (req, res) => {
 app.post('/api/notifications/read-all', requireAuth, async (req, res) => {
   try {
     if (req.user.role === 'owner') return res.json({ ok: true });
-    await updateTab('Notifications', rows => {
-      rows.forEach(n => { if (n.userId === req.user.id) n.read = true; });
-      return rows;
-    });
+    try {
+      await updateTab('Notifications', rows => {
+        rows.forEach(n => { if (n.userId === req.user.id) n.read = true; });
+        return rows;
+      });
+    } catch (e) {
+      console.error('Notifications tab unavailable:', e.message);
+    }
     res.json({ ok: true });
   } catch (e) { sendErr(res, e); }
 });
