@@ -59,6 +59,22 @@ async function notifyAssignment(task, actor) {
   }
 }
 
+// In-app notification (separate from, and in addition to, the optional email above).
+async function addNotification(userId, taskId, type, message) {
+  if (!userId) return;
+  try {
+    await updateTab('Notifications', rows => {
+      rows.push({
+        id: genId('n'), userId, taskId, type, message, read: false,
+        createdAt: new Date().toISOString()
+      });
+      return rows;
+    });
+  } catch (e) {
+    console.error('addNotification failed:', e.message);
+  }
+}
+
 // ---------- AUTH ----------
 app.get('/api/auth/status', async (req, res) => {
   try {
@@ -135,7 +151,9 @@ app.post('/api/auth/change-password', requireAuth, async (req, res) => {
 // ---------- STATE ----------
 app.get('/api/state', requireAuth, async (req, res) => {
   try {
-    const [teams, membersRaw, tasksAll] = await Promise.all([readTab('Teams'), readTab('Members'), readTab('Tasks')]);
+    const [teams, membersRaw, tasksAll, notificationsAll] = await Promise.all([
+      readTab('Teams'), readTab('Members'), readTab('Tasks'), readTab('Notifications')
+    ]);
     const members = membersRaw.map(({ passwordHash, ...rest }) => rest);
     const leader = isLeader(req.user);
     let tasks, dashboardTasks;
@@ -151,7 +169,35 @@ app.get('/api/state', requireAuth, async (req, res) => {
       tasks = tasksAll.filter(t => t.assignee === req.user.id);
       dashboardTasks = tasks;
     }
-    res.json({ teams, members, tasks, dashboardTasks, you: req.user });
+    const myUserId = req.user.role === 'owner' ? null : req.user.id;
+    const notifications = myUserId
+      ? notificationsAll.filter(n => n.userId === myUserId).sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || '')).slice(0, 50)
+      : [];
+    const unreadCount = notifications.filter(n => !n.read).length;
+    res.json({ teams, members, tasks, dashboardTasks, notifications, unreadCount, you: req.user });
+  } catch (e) { sendErr(res, e); }
+});
+
+app.post('/api/notifications/:id/read', requireAuth, async (req, res) => {
+  try {
+    if (req.user.role === 'owner') return res.json({ ok: true }); // owner has no notifications
+    await updateTab('Notifications', rows => {
+      const n = rows.find(r => r.id === req.params.id && r.userId === req.user.id);
+      if (n) n.read = true;
+      return rows;
+    });
+    res.json({ ok: true });
+  } catch (e) { sendErr(res, e); }
+});
+
+app.post('/api/notifications/read-all', requireAuth, async (req, res) => {
+  try {
+    if (req.user.role === 'owner') return res.json({ ok: true });
+    await updateTab('Notifications', rows => {
+      rows.forEach(n => { if (n.userId === req.user.id) n.read = true; });
+      return rows;
+    });
+    res.json({ ok: true });
   } catch (e) { sendErr(res, e); }
 });
 
@@ -263,7 +309,10 @@ app.post('/api/tasks', requireAuth, requireLeader, async (req, res) => {
       rows.push(newTask);
       return rows;
     });
-    if (newTask.assignee) await notifyAssignment(newTask, req.user);
+    if (newTask.assignee) {
+      await notifyAssignment(newTask, req.user);
+      await addNotification(newTask.assignee, newTask.id, 'assigned', `New task assigned: "${newTask.title}"`);
+    }
     res.json(newTask);
   } catch (e) { sendErr(res, e); }
 });
@@ -277,6 +326,7 @@ app.put('/api/tasks/:id', requireAuth, requireLeader, async (req, res) => {
     if (req.user.role !== 'owner') membersCache = await readTab('Members');
     let updated;
     let wasReassigned = false;
+    let wasUpdated = false;
     await updateTab('Tasks', rows => {
       const t = rows.find(r => r.id === req.params.id);
       if (!t) throw new Error('NOT_FOUND');
@@ -288,6 +338,7 @@ app.put('/api/tasks/:id', requireAuth, requireLeader, async (req, res) => {
       }
       const prevAssignee = t.assignee;
       const prevSnapshot = { id: t.id, sequence: t.sequence, startDate: t.startDate, endDate: t.endDate };
+      const before = { title: t.title, description: t.description, priority: t.priority, startDate: t.startDate, endDate: t.endDate };
       const newAssignee = assignee !== undefined ? (assignee || '') : t.assignee;
       let newStart = t.startDate;
       let newEnd = t.endDate;
@@ -322,9 +373,18 @@ app.put('/api/tasks/:id', requireAuth, requireLeader, async (req, res) => {
 
       updated = t;
       wasReassigned = !!(newAssignee && newAssignee !== prevAssignee);
+      wasUpdated = !wasReassigned && !!newAssignee && (
+        before.title !== t.title || before.description !== t.description ||
+        before.priority !== t.priority || before.startDate !== t.startDate || before.endDate !== t.endDate
+      );
       return rows;
     });
-    if (wasReassigned) await notifyAssignment(updated, req.user);
+    if (wasReassigned) {
+      await notifyAssignment(updated, req.user);
+      await addNotification(updated.assignee, updated.id, 'reassigned', `Task reassigned to you: "${updated.title}"`);
+    } else if (wasUpdated) {
+      await addNotification(updated.assignee, updated.id, 'updated', `Task updated: "${updated.title}"`);
+    }
     res.json(updated);
   } catch (e) { sendErr(res, e); }
 });

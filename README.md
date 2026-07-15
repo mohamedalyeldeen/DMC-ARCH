@@ -205,3 +205,19 @@ original by definition, so "Allow Task Overlap" is automatically checked
 in that case — uncheck it if you want the safety check enforced anyway.
 Duplicating to *other* engineers still checks for overlaps against their
 existing schedule unless you check that box yourself.
+
+## Phase 3: In-app notifications
+
+Engineers now get an in-app notification (separate from email, which stays
+optional) whenever they receive a new task, get reassigned a task, or one
+of their tasks is updated. This uses a new **Notifications** tab in your
+Google Sheet, created automatically the first time a notification fires —
+no manual setup needed.
+
+**What it looks like:**
+- A 🔔 bell button in the top bar (next to the role badge) shows an unread count badge.
+- Clicking it opens a panel listing every notification, newest first, with a timestamp.
+- Clicking a notification marks it as read; there's also a "Mark all as read" button.
+- The owner doesn't get notifications (they already see the whole board), only members and team leaders do.
+
+No new environment variables needed — this uses the same Google Sheets connection as everything else.
