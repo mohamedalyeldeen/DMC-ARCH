@@ -198,3 +198,10 @@ back to the same person, or to one or more other engineers you're allowed to
 assign to, in a single step. Duplicates always start with no dates set (so
 they don't immediately conflict with the original) — set fresh Start/End
 dates on each copy afterward, either manually or with auto-schedule.
+
+**Update:** duplicating a task now copies its Start/End dates too (not
+left blank). Duplicating to the *same* assignee will always overlap the
+original by definition, so "Allow Task Overlap" is automatically checked
+in that case — uncheck it if you want the safety check enforced anyway.
+Duplicating to *other* engineers still checks for overlaps against their
+existing schedule unless you check that box yourself.

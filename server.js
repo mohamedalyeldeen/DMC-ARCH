@@ -354,6 +354,7 @@ app.delete('/api/tasks/:id', requireAuth, requireLeader, async (req, res) => {
 app.post('/api/tasks/:id/duplicate', requireAuth, requireLeader, async (req, res) => {
   try {
     const assignees = Array.isArray(req.body.assignees) ? req.body.assignees.filter(Boolean) : [];
+    const allowOverlap = !!req.body.allowOverlap;
     let membersCache = null;
     if (req.user.role !== 'owner') membersCache = await readTab('Members');
 
@@ -368,10 +369,15 @@ app.post('/api/tasks/:id/duplicate', requireAuth, requireLeader, async (req, res
         if (assigneeId && req.user.role !== 'owner' && !canLeadAssignTo(req.user, assigneeId, membersCache)) {
           throw new Error('FORBIDDEN');
         }
+        const startDate = original.startDate || '';
+        const endDate = original.endDate || '';
+        if (assigneeId && startDate && !allowOverlap && scheduler.detectOverlap(rows, assigneeId, startDate, endDate)) {
+          throw new Error('OVERLAP');
+        }
         const dup = {
           id: genId('t'), title: original.title, description: original.description,
-          assignee: assigneeId || '', priority: original.priority, due: '',
-          status: 'todo', completedAt: '', startDate: '', endDate: '',
+          assignee: assigneeId || '', priority: original.priority, due: endDate,
+          status: 'todo', completedAt: '', startDate, endDate,
           sequence: assigneeId ? scheduler.nextSequence(rows, assigneeId) : 0,
           history: [{ status: 'todo', at: today() }], createdAt: today()
         };
