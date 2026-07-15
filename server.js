@@ -7,6 +7,7 @@ const path = require('path');
 const { readTab, updateTab, getConfig, setConfig } = require('./lib/sheets');
 const { sign, requireAuth, requireLeader, requireOwner, isLeader } = require('./lib/auth');
 const { sendMail, taskAssignedEmail } = require('./lib/mailer');
+const scheduler = require('./lib/scheduler');
 
 const app = express();
 app.use(cors());
@@ -20,13 +21,14 @@ function genId(prefix) { return prefix + crypto.randomBytes(4).toString('hex'); 
 function today() { return new Date().toISOString().slice(0, 10); }
 
 function sendErr(res, e) {
-  const map = { NOT_FOUND: 404, FORBIDDEN: 403, USERNAME_TAKEN: 409, BAD_REQUEST: 400 };
+  const map = { NOT_FOUND: 404, FORBIDDEN: 403, USERNAME_TAKEN: 409, BAD_REQUEST: 400, OVERLAP: 409 };
   const status = map[e.message] || 500;
   const messages = {
     NOT_FOUND: 'That record no longer exists.',
     FORBIDDEN: "You don't have permission to do that.",
     USERNAME_TAKEN: 'That username is already taken.',
-    BAD_REQUEST: 'Missing or invalid data.'
+    BAD_REQUEST: 'Missing or invalid data.',
+    OVERLAP: 'This overlaps with another task already scheduled for this person. Check "Allow Task Overlap" to schedule it anyway.'
   };
   console.error(e);
   res.status(status).json({ error: messages[e.message] || 'Something went wrong.' });
@@ -214,7 +216,9 @@ app.delete('/api/members/:id', requireAuth, requireOwner, async (req, res) => {
 // ---------- TASKS ----------
 app.post('/api/tasks', requireAuth, requireLeader, async (req, res) => {
   try {
-    const { title, description, assignee, priority, due } = req.body;
+    const { title, description, assignee, priority, due, allowOverlap, mode, durationDays, insertAfterTaskId } = req.body;
+    const bodyStart = req.body.startDate;
+    const bodyEnd = req.body.endDate;
     if (!title) throw new Error('BAD_REQUEST');
     if (req.user.role !== 'owner') {
       if (!assignee) throw new Error('FORBIDDEN');
@@ -222,12 +226,34 @@ app.post('/api/tasks', requireAuth, requireLeader, async (req, res) => {
       const target = members.find(m => m.id === assignee);
       if (!target || target.reportsTo !== req.user.id) throw new Error('FORBIDDEN');
     }
-    const newTask = {
-      id: genId('t'), title, description: description || '', assignee: assignee || '',
-      priority: priority || 'M', due: due || '', status: 'todo', completedAt: '',
-      history: [{ status: 'todo', at: today() }], createdAt: today()
-    };
-    await updateTab('Tasks', rows => { rows.push(newTask); return rows; });
+    let newTask;
+    await updateTab('Tasks', rows => {
+      let startDate = '', endDate = '', sequence = 0;
+      if (assignee) {
+        if (mode === 'auto') {
+          const dur = Math.max(1, parseInt(durationDays, 10) || 1);
+          const computed = scheduler.insertWithShift(rows, assignee, { afterTaskId: insertAfterTaskId || null, durationDays: dur });
+          startDate = computed.startDate;
+          endDate = computed.endDate;
+          sequence = computed.sequence;
+        } else if (bodyStart) {
+          startDate = bodyStart;
+          endDate = bodyEnd || bodyStart;
+          if (!allowOverlap && scheduler.detectOverlap(rows, assignee, startDate, endDate)) {
+            throw new Error('OVERLAP');
+          }
+          sequence = scheduler.nextSequence(rows, assignee);
+        }
+      }
+      newTask = {
+        id: genId('t'), title, description: description || '', assignee: assignee || '',
+        priority: priority || 'M', due: due || '', status: 'todo', completedAt: '',
+        startDate, endDate, sequence,
+        history: [{ status: 'todo', at: today() }], createdAt: today()
+      };
+      rows.push(newTask);
+      return rows;
+    });
     if (newTask.assignee) await notifyAssignment(newTask, req.user);
     res.json(newTask);
   } catch (e) { sendErr(res, e); }
@@ -235,7 +261,9 @@ app.post('/api/tasks', requireAuth, requireLeader, async (req, res) => {
 
 app.put('/api/tasks/:id', requireAuth, requireLeader, async (req, res) => {
   try {
-    const { title, description, assignee, priority, due } = req.body;
+    const { title, description, assignee, priority, due, allowOverlap } = req.body;
+    const bodyStart = req.body.startDate;
+    const bodyEnd = req.body.endDate;
     let membersCache = null;
     if (req.user.role !== 'owner') membersCache = await readTab('Members');
     let updated;
@@ -251,14 +279,42 @@ app.put('/api/tasks/:id', requireAuth, requireLeader, async (req, res) => {
           if (!newTarget || newTarget.reportsTo !== req.user.id) throw new Error('FORBIDDEN');
         }
       }
+      const prevAssignee = t.assignee;
+      const prevSnapshot = { id: t.id, sequence: t.sequence, startDate: t.startDate, endDate: t.endDate };
+      const newAssignee = assignee !== undefined ? (assignee || '') : t.assignee;
+      let newStart = t.startDate;
+      let newEnd = t.endDate;
+      if (bodyStart !== undefined) {
+        newStart = bodyStart;
+        newEnd = bodyEnd || bodyStart;
+      } else if (bodyEnd !== undefined) {
+        newEnd = bodyEnd;
+      }
+
+      if (newAssignee && newStart) {
+        if (!allowOverlap && scheduler.detectOverlap(rows, newAssignee, newStart, newEnd, t.id)) {
+          throw new Error('OVERLAP');
+        }
+      }
+
+      if (newAssignee !== prevAssignee) {
+        if (prevAssignee) scheduler.removeAndCompact(rows, prevAssignee, prevSnapshot);
+      }
+
       if (title) t.title = title;
       t.description = description || '';
-      const prevAssignee = t.assignee;
-      t.assignee = assignee || '';
+      t.assignee = newAssignee;
+      t.startDate = newStart || '';
+      t.endDate = newEnd || '';
       if (priority) t.priority = priority;
       t.due = due || '';
+
+      if (newAssignee !== prevAssignee) {
+        t.sequence = newAssignee ? scheduler.nextSequence(rows, newAssignee) : 0;
+      }
+
       updated = t;
-      wasReassigned = !!(t.assignee && t.assignee !== prevAssignee);
+      wasReassigned = !!(newAssignee && newAssignee !== prevAssignee);
       return rows;
     });
     if (wasReassigned) await notifyAssignment(updated, req.user);
@@ -271,13 +327,15 @@ app.delete('/api/tasks/:id', requireAuth, requireLeader, async (req, res) => {
     let membersCache = null;
     if (req.user.role !== 'owner') membersCache = await readTab('Members');
     await updateTab('Tasks', rows => {
+      const t = rows.find(r => r.id === req.params.id);
+      if (!t) throw new Error('NOT_FOUND');
       if (req.user.role !== 'owner') {
-        const t = rows.find(r => r.id === req.params.id);
-        if (!t) throw new Error('NOT_FOUND');
         const currentTarget = membersCache.find(m => m.id === t.assignee);
         if (!currentTarget || currentTarget.reportsTo !== req.user.id) throw new Error('FORBIDDEN');
       }
-      return rows.filter(r => r.id !== req.params.id);
+      const remaining = rows.filter(r => r.id !== req.params.id);
+      if (t.assignee) scheduler.removeAndCompact(remaining, t.assignee, t);
+      return remaining;
     });
     res.json({ ok: true });
   } catch (e) { sendErr(res, e); }

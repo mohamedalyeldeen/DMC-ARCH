@@ -155,3 +155,32 @@ If your company's mailbox requires multi-factor authentication, you may need
 an **app password** for `SMTP_PASS` instead of the normal login password —
 ask whoever manages your Microsoft 365 admin account to generate one.
 
+
+## Task scheduling (Start/End dates, overlap prevention, auto-sequencing)
+
+Each task can now have a Start Date and End Date (separate from the existing
+Due Date, which is still used for the on-time completion stats on the
+Dashboard tab).
+
+When assigning or editing a task, owners and team leaders have two ways to set its dates:
+
+- **Manual dates** — pick a Start and End date directly. If it overlaps with
+  another task already scheduled for that person, you'll get a validation
+  error unless you check **"Allow Task Overlap."**
+- **Auto-schedule** (new tasks only) — instead of picking dates, give a
+  duration in days and choose where in that person's queue it goes ("At the
+  beginning" or "After [existing task]"). The scheduling engine
+  (`lib/scheduler.js`) automatically calculates its dates and shifts every
+  later task in that person's queue forward by the same number of days, so
+  nothing overlaps and every task keeps its original length.
+
+Deleting a task automatically closes the gap it leaves behind, shifting that
+person's later tasks backward to stay contiguous.
+
+All of this date math lives in one file, `lib/scheduler.js`, so future
+features (capacity view, Gantt chart, etc.) can reuse the same logic instead
+of duplicating it.
+
+**Note:** existing tasks created before this update won't have Start/End
+dates — that's fine, they just won't show a date range on their card until
+you edit them and set one.
