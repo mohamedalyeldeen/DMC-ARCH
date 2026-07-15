@@ -216,7 +216,7 @@ app.delete('/api/members/:id', requireAuth, requireOwner, async (req, res) => {
 // ---------- TASKS ----------
 app.post('/api/tasks', requireAuth, requireLeader, async (req, res) => {
   try {
-    const { title, description, assignee, priority, due, allowOverlap, mode, durationDays, insertAfterTaskId } = req.body;
+    const { title, description, assignee, priority, allowOverlap, mode, durationDays, insertAfterTaskId } = req.body;
     const bodyStart = req.body.startDate;
     const bodyEnd = req.body.endDate;
     if (!title) throw new Error('BAD_REQUEST');
@@ -247,7 +247,7 @@ app.post('/api/tasks', requireAuth, requireLeader, async (req, res) => {
       }
       newTask = {
         id: genId('t'), title, description: description || '', assignee: assignee || '',
-        priority: priority || 'M', due: due || '', status: 'todo', completedAt: '',
+        priority: priority || 'M', due: endDate || '', status: 'todo', completedAt: '',
         startDate, endDate, sequence,
         history: [{ status: 'todo', at: today() }], createdAt: today()
       };
@@ -261,7 +261,7 @@ app.post('/api/tasks', requireAuth, requireLeader, async (req, res) => {
 
 app.put('/api/tasks/:id', requireAuth, requireLeader, async (req, res) => {
   try {
-    const { title, description, assignee, priority, due, allowOverlap } = req.body;
+    const { title, description, assignee, priority, allowOverlap } = req.body;
     const bodyStart = req.body.startDate;
     const bodyEnd = req.body.endDate;
     let membersCache = null;
@@ -306,8 +306,8 @@ app.put('/api/tasks/:id', requireAuth, requireLeader, async (req, res) => {
       t.assignee = newAssignee;
       t.startDate = newStart || '';
       t.endDate = newEnd || '';
+      if (newEnd) t.due = newEnd; // keep legacy due date untouched if this task still has no dates
       if (priority) t.priority = priority;
-      t.due = due || '';
 
       if (newAssignee !== prevAssignee) {
         t.sequence = newAssignee ? scheduler.nextSequence(rows, newAssignee) : 0;
