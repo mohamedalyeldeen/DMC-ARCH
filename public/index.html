@@ -57,6 +57,7 @@
       <div class="stats" id="statsLine"></div>
       <button class="primary-btn" id="newTaskBtn" style="display:none;">+ Assign task</button>
       <div class="user-strip">
+        <button class="mini-btn" id="notifBtn" style="position:relative;">🔔<span id="notifBadge" style="display:none;position:absolute;top:-6px;right:-6px;background:var(--rust);color:#fff;border-radius:10px;padding:1px 5px;font-size:9px;font-family:'IBM Plex Mono',monospace;"></span></button>
         <span class="role-badge" id="roleBadge"></span>
         <button class="mini-btn" id="changePwBtn">Password</button>
         <button class="mini-btn primary" id="saveCloseBtn">Save &amp; close</button>
@@ -134,6 +135,19 @@
         </div>
       </div>
     </form>
+  </div>
+</div>
+
+<div class="modal-overlay" id="notificationsOverlay">
+  <div class="modal">
+    <h3>Notifications</h3>
+    <div id="notifList" style="max-height:360px;overflow-y:auto;"></div>
+    <div class="modal-actions">
+      <button type="button" class="btn-text" id="markAllReadBtn">Mark all as read</button>
+      <div style="margin-left:auto;display:flex;gap:10px;">
+        <button type="button" class="btn-cancel" id="closeNotifBtn">Close</button>
+      </div>
+    </div>
   </div>
 </div>
 

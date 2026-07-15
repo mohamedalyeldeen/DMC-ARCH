@@ -174,6 +174,7 @@
   // ---------- APP RENDER ----------
   function renderApp(){
     renderRoleBadge();
+    renderNotifBadge();
     renderSidebar();
     if(activeTab==='board'){
       document.getElementById('viewTitle').textContent = isLeaderLike() ? "This Week's Jobs" : 'My Tasks';
@@ -198,6 +199,65 @@
     else label = 'Member — ' + (teamById(session.teamId)||{name:''}).name;
     document.getElementById('roleBadge').textContent = label;
   }
+
+  function renderNotifBadge(){
+    const count = state.unreadCount || 0;
+    const badge = document.getElementById('notifBadge');
+    if(count > 0){
+      badge.textContent = count > 99 ? '99+' : String(count);
+      badge.style.display = 'inline-block';
+    } else {
+      badge.style.display = 'none';
+    }
+  }
+
+  function fmtDateTime(iso){
+    if(!iso) return '';
+    const d = new Date(iso);
+    return d.toLocaleString('en-US', {month:'short', day:'numeric', hour:'2-digit', minute:'2-digit'});
+  }
+
+  function renderNotifList(){
+    const list = document.getElementById('notifList');
+    const notifs = state.notifications || [];
+    if(notifs.length===0){
+      list.innerHTML = '<div class="notif-empty">No notifications yet.</div>';
+      return;
+    }
+    list.innerHTML = notifs.map(n => `
+      <div class="notif-row ${n.read?'':'unread'}" data-id="${n.id}">
+        ${n.read?'':'<span class="notif-dot"></span>'}${escapeHtml(n.message)}
+        <div class="notif-time">${fmtDateTime(n.createdAt)}</div>
+      </div>
+    `).join('');
+    list.querySelectorAll('.notif-row').forEach(row=>{
+      row.addEventListener('click', async ()=>{
+        const id = row.dataset.id;
+        const n = notifs.find(x=>x.id===id);
+        if(n && !n.read){
+          try{ await api('POST', `/api/notifications/${id}/read`); await refreshState(); openNotificationsPanel(); }
+          catch(e){ /* ignore */ }
+        }
+      });
+    });
+  }
+
+  function openNotificationsPanel(){
+    modalOpenFlag = true;
+    renderNotifList();
+    document.getElementById('notificationsOverlay').classList.add('open');
+  }
+  function closeNotificationsPanel(){
+    document.getElementById('notificationsOverlay').classList.remove('open');
+    modalOpenFlag = false;
+  }
+  document.getElementById('notifBtn').addEventListener('click', openNotificationsPanel);
+  document.getElementById('closeNotifBtn').addEventListener('click', closeNotificationsPanel);
+  document.getElementById('notificationsOverlay').addEventListener('click', (e)=>{ if(e.target.id==='notificationsOverlay') closeNotificationsPanel(); });
+  document.getElementById('markAllReadBtn').addEventListener('click', async ()=>{
+    try{ await api('POST', '/api/notifications/read-all'); await refreshState(); renderNotifList(); }
+    catch(e){ alert(e.message); }
+  });
 
   document.getElementById('tabBoardBtn').addEventListener('click', ()=>{
     activeTab='board';
