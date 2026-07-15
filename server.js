@@ -20,6 +20,15 @@ const COLUMN_ORDER = ['todo', 'inprogress', 'submitted', 'done'];
 function genId(prefix) { return prefix + crypto.randomBytes(4).toString('hex'); }
 function today() { return new Date().toISOString().slice(0, 10); }
 
+// Owner can assign to anyone. A team lead can assign to their own reports,
+// or to themselves (Phase 2: team leader self-assignment).
+function canLeadAssignTo(user, assigneeId, membersCache) {
+  if (user.role === 'owner') return true;
+  if (assigneeId === user.id) return true;
+  const target = membersCache.find(m => m.id === assigneeId);
+  return !!(target && target.reportsTo === user.id);
+}
+
 function sendErr(res, e) {
   const map = { NOT_FOUND: 404, FORBIDDEN: 403, USERNAME_TAKEN: 409, BAD_REQUEST: 400, OVERLAP: 409 };
   const status = map[e.message] || 500;
@@ -135,6 +144,7 @@ app.get('/api/state', requireAuth, async (req, res) => {
       dashboardTasks = tasksAll;
     } else if (req.user.isTeamLead) {
       const myReportIds = new Set(membersRaw.filter(m => m.reportsTo === req.user.id).map(m => m.id));
+      myReportIds.add(req.user.id); // Phase 2: team leaders can self-assign, include their own tasks too
       tasks = tasksAll; // team leaders can still browse the whole board
       dashboardTasks = tasksAll.filter(t => myReportIds.has(t.assignee));
     } else {
@@ -223,8 +233,7 @@ app.post('/api/tasks', requireAuth, requireLeader, async (req, res) => {
     if (req.user.role !== 'owner') {
       if (!assignee) throw new Error('FORBIDDEN');
       const members = await readTab('Members');
-      const target = members.find(m => m.id === assignee);
-      if (!target || target.reportsTo !== req.user.id) throw new Error('FORBIDDEN');
+      if (!canLeadAssignTo(req.user, assignee, members)) throw new Error('FORBIDDEN');
     }
     let newTask;
     await updateTab('Tasks', rows => {
@@ -272,11 +281,9 @@ app.put('/api/tasks/:id', requireAuth, requireLeader, async (req, res) => {
       const t = rows.find(r => r.id === req.params.id);
       if (!t) throw new Error('NOT_FOUND');
       if (req.user.role !== 'owner') {
-        const currentTarget = membersCache.find(m => m.id === t.assignee);
-        if (!currentTarget || currentTarget.reportsTo !== req.user.id) throw new Error('FORBIDDEN');
+        if (!canLeadAssignTo(req.user, t.assignee, membersCache)) throw new Error('FORBIDDEN');
         if (assignee) {
-          const newTarget = membersCache.find(m => m.id === assignee);
-          if (!newTarget || newTarget.reportsTo !== req.user.id) throw new Error('FORBIDDEN');
+          if (!canLeadAssignTo(req.user, assignee, membersCache)) throw new Error('FORBIDDEN');
         }
       }
       const prevAssignee = t.assignee;
@@ -330,14 +337,54 @@ app.delete('/api/tasks/:id', requireAuth, requireLeader, async (req, res) => {
       const t = rows.find(r => r.id === req.params.id);
       if (!t) throw new Error('NOT_FOUND');
       if (req.user.role !== 'owner') {
-        const currentTarget = membersCache.find(m => m.id === t.assignee);
-        if (!currentTarget || currentTarget.reportsTo !== req.user.id) throw new Error('FORBIDDEN');
+        if (!canLeadAssignTo(req.user, t.assignee, membersCache)) throw new Error('FORBIDDEN');
       }
       const remaining = rows.filter(r => r.id !== req.params.id);
       if (t.assignee) scheduler.removeAndCompact(remaining, t.assignee, t);
       return remaining;
     });
     res.json({ ok: true });
+  } catch (e) { sendErr(res, e); }
+});
+
+// Duplicates a task's title/description/priority to one assignee or several.
+// Dates are intentionally left blank on duplicates (copying the original's
+// dates would just trigger an overlap against the original itself) — the
+// leader sets fresh dates on each copy afterward.
+app.post('/api/tasks/:id/duplicate', requireAuth, requireLeader, async (req, res) => {
+  try {
+    const assignees = Array.isArray(req.body.assignees) ? req.body.assignees.filter(Boolean) : [];
+    let membersCache = null;
+    if (req.user.role !== 'owner') membersCache = await readTab('Members');
+
+    let created = [];
+    await updateTab('Tasks', rows => {
+      const original = rows.find(r => r.id === req.params.id);
+      if (!original) throw new Error('NOT_FOUND');
+      if (req.user.role !== 'owner' && !canLeadAssignTo(req.user, original.assignee, membersCache)) throw new Error('FORBIDDEN');
+
+      const targets = assignees.length > 0 ? assignees : [original.assignee];
+      targets.forEach(assigneeId => {
+        if (assigneeId && req.user.role !== 'owner' && !canLeadAssignTo(req.user, assigneeId, membersCache)) {
+          throw new Error('FORBIDDEN');
+        }
+        const dup = {
+          id: genId('t'), title: original.title, description: original.description,
+          assignee: assigneeId || '', priority: original.priority, due: '',
+          status: 'todo', completedAt: '', startDate: '', endDate: '',
+          sequence: assigneeId ? scheduler.nextSequence(rows, assigneeId) : 0,
+          history: [{ status: 'todo', at: today() }], createdAt: today()
+        };
+        rows.push(dup);
+        created.push(dup);
+      });
+      return rows;
+    });
+
+    for (const t of created) {
+      if (t.assignee) await notifyAssignment(t, req.user);
+    }
+    res.json(created);
   } catch (e) { sendErr(res, e); }
 });
 
@@ -355,8 +402,7 @@ app.post('/api/tasks/:id/move', requireAuth, async (req, res) => {
       const fromIdx = COLUMN_ORDER.indexOf(t.status);
       let isLeaderForThis = req.user.role === 'owner';
       if (!isLeaderForThis && req.user.isTeamLead) {
-        const target = membersCache.find(m => m.id === t.assignee);
-        isLeaderForThis = !!(target && target.reportsTo === req.user.id);
+        isLeaderForThis = canLeadAssignTo(req.user, t.assignee, membersCache);
       }
       if (toIdx > fromIdx) {
         const canAdvance = isLeaderForThis || (req.user.id === t.assignee && fromIdx < 2);

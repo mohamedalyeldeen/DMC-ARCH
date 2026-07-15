@@ -184,3 +184,17 @@ of duplicating it.
 **Note:** existing tasks created before this update won't have Start/End
 dates — that's fine, they just won't show a date range on their card until
 you edit them and set one.
+
+## Phase 2: Self-assignment & task duplication
+
+**Team leader self-assignment** — team leaders (and the owner) can now assign
+a task to themselves, not just to the people who report to them. Their own
+self-assigned tasks also show up in their Dashboard tab and team performance
+table.
+
+**Duplicate task** — click the ⧉ button on any ticket you can manage to copy
+its title, description, and priority to a new task. You can duplicate it
+back to the same person, or to one or more other engineers you're allowed to
+assign to, in a single step. Duplicates always start with no dates set (so
+they don't immediately conflict with the original) — set fresh Start/End
+dates on each copy afterward, either manually or with auto-schedule.
