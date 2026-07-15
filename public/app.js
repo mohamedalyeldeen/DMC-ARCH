@@ -486,6 +486,7 @@
           <div class="ticket-assignee">${member? `<div class="avatar" style="width:18px;height:18px;font-size:8px;background:${member.color};">${initials(member.name)}</div><span>${escapeHtml(member.name)}</span>`:'<span style="color:var(--text-dim-on-paper);">Unassigned</span>'}</div>
           <div class="ticket-due ${overdue?'overdue':''}">${overdue?'⚠ ':''}${fmtDate(t.due)}</div>
         </div>
+        ${t.startDate && t.endDate ? `<div style="font-family:'IBM Plex Mono',monospace;font-size:10px;color:var(--text-dim-on-paper);margin-bottom:8px;">${fmtDate(t.startDate)} → ${fmtDate(t.endDate)}</div>` : ''}
         <div class="lifecycle">${dots}</div>
         <div class="ticket-actions">
           ${colIdx>0? `<button class="tk-btn back" data-act="back" ${canBack?'':'disabled'}>◂ Back</button>`:''}
@@ -518,6 +519,23 @@
   }
 
   // ---------- TASK MODAL ----------
+  function toggleAutoScheduleFields(){
+    const auto = document.getElementById('fAutoSchedule').checked;
+    document.getElementById('manualDatesFields').style.display = auto ? 'none' : 'block';
+    document.getElementById('autoScheduleFields').style.display = auto ? 'block' : 'none';
+  }
+  document.getElementById('fAutoSchedule').addEventListener('change', toggleAutoScheduleFields);
+
+  function populateInsertAfterOptions(assigneeId){
+    const sel = document.getElementById('fInsertAfter');
+    const queue = state.tasks
+      .filter(t=>t.assignee===assigneeId && t.startDate && t.endDate)
+      .sort((a,b)=>(a.sequence||0)-(b.sequence||0));
+    sel.innerHTML = '<option value="">At the beginning of their queue</option>' +
+      queue.map(t=>`<option value="${t.id}">After "${escapeHtml(t.title)}" (${fmtDate(t.endDate)})</option>`).join('');
+  }
+  document.getElementById('fAssignee').addEventListener('change', (e)=> populateInsertAfterOptions(e.target.value));
+
   function fillAssigneeOptions(selected){
     const sel = document.getElementById('fAssignee');
     let html = isOwner() ? '<option value="">Unassigned</option>' : '';
@@ -548,13 +566,26 @@
       fillAssigneeOptions(t.assignee);
       document.getElementById('fPriority').value=t.priority;
       document.getElementById('fDue').value=t.due||'';
+      document.getElementById('fStartDate').value=t.startDate||'';
+      document.getElementById('fEndDate').value=t.endDate||'';
+      document.getElementById('fAllowOverlap').checked=false;
+      document.getElementById('fAutoSchedule').checked=false;
+      // Auto-schedule only applies when creating a brand new task.
+      document.getElementById('autoScheduleField').style.display='none';
     } else {
       document.getElementById('modalTitle').textContent='Assign a new task';
       document.getElementById('saveTaskBtn').textContent='Assign task';
       document.getElementById('deleteTaskBtn').style.display='none';
       fillAssigneeOptions('');
       document.getElementById('fPriority').value='M';
+      document.getElementById('fStartDate').value='';
+      document.getElementById('fEndDate').value='';
+      document.getElementById('fAllowOverlap').checked=false;
+      document.getElementById('fAutoSchedule').checked=false;
+      document.getElementById('autoScheduleField').style.display='block';
+      populateInsertAfterOptions(document.getElementById('fAssignee').value);
     }
+    toggleAutoScheduleFields();
     document.getElementById('modalOverlay').classList.add('open');
   }
   function closeTaskModal(){ document.getElementById('modalOverlay').classList.remove('open'); modalOpenFlag=false; }
@@ -572,11 +603,29 @@
     const assignee = document.getElementById('fAssignee').value || '';
     const priority = document.getElementById('fPriority').value;
     const due = document.getElementById('fDue').value || '';
+    const isAuto = document.getElementById('fAutoSchedule').checked && !id;
     try{
       if(id){
-        await api('PUT', '/api/tasks/'+id, {title, description, assignee, priority, due});
+        await api('PUT', '/api/tasks/'+id, {
+          title, description, assignee, priority, due,
+          startDate: document.getElementById('fStartDate').value || '',
+          endDate: document.getElementById('fEndDate').value || '',
+          allowOverlap: document.getElementById('fAllowOverlap').checked
+        });
+      } else if(isAuto){
+        await api('POST', '/api/tasks', {
+          title, description, assignee, priority, due,
+          mode: 'auto',
+          durationDays: parseInt(document.getElementById('fDuration').value,10) || 1,
+          insertAfterTaskId: document.getElementById('fInsertAfter').value || null
+        });
       } else {
-        await api('POST', '/api/tasks', {title, description, assignee, priority, due});
+        await api('POST', '/api/tasks', {
+          title, description, assignee, priority, due,
+          startDate: document.getElementById('fStartDate').value || '',
+          endDate: document.getElementById('fEndDate').value || '',
+          allowOverlap: document.getElementById('fAllowOverlap').checked
+        });
       }
       closeTaskModal();
       await refreshState();
