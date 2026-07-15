@@ -565,6 +565,7 @@
     modalOpenFlag = true;
     document.getElementById('dupTaskId').value = taskId;
     document.getElementById('dupSame').checked = true;
+    document.getElementById('dupAllowOverlap').checked = true;
     const listEl = document.getElementById('dupEngineerList');
     const engineers = assignableEngineers();
     listEl.innerHTML = engineers.length ? engineers.map(m=>`
@@ -579,8 +580,14 @@
     document.getElementById('duplicateModalOverlay').classList.remove('open');
     modalOpenFlag = false;
   }
-  document.getElementById('dupSame').addEventListener('change', ()=>{ document.getElementById('dupEngineerList').style.display='none'; });
-  document.getElementById('dupSelected').addEventListener('change', ()=>{ document.getElementById('dupEngineerList').style.display='block'; });
+  document.getElementById('dupSame').addEventListener('change', ()=>{
+    document.getElementById('dupEngineerList').style.display='none';
+    document.getElementById('dupAllowOverlap').checked = true; // duplicating to the same person always overlaps the original
+  });
+  document.getElementById('dupSelected').addEventListener('change', ()=>{
+    document.getElementById('dupEngineerList').style.display='block';
+    document.getElementById('dupAllowOverlap').checked = false;
+  });
   document.getElementById('cancelDuplicateBtn').addEventListener('click', closeDuplicateModal);
   document.getElementById('duplicateModalOverlay').addEventListener('click', (e)=>{ if(e.target.id==='duplicateModalOverlay') closeDuplicateModal(); });
 
@@ -592,7 +599,10 @@
       if(assignees.length===0){ alert('Select at least one engineer.'); return; }
     }
     try{
-      await api('POST', `/api/tasks/${taskId}/duplicate`, {assignees});
+      await api('POST', `/api/tasks/${taskId}/duplicate`, {
+        assignees,
+        allowOverlap: document.getElementById('dupAllowOverlap').checked
+      });
       closeDuplicateModal();
       await refreshState();
     }catch(e){ alert(e.message); }
