@@ -139,6 +139,7 @@
   function canManageTasks(){ return isLeaderLike(); }
   function isMyReport(memberId){
     if(isOwner()) return true;
+    if(memberId===session.id) return true; // team leaders can self-assign (Phase 2)
     const m = memberById(memberId);
     return !!(m && m.reportsTo === session.id);
   }
@@ -495,6 +496,7 @@
           ${colIdx>0? `<button class="tk-btn back" data-act="back" ${canBack?'':'disabled'}>◂ Back</button>`:''}
           ${colIdx<COLUMNS.length-1? `<button class="tk-btn" data-act="forward" ${canFwd?'':'disabled'}>${nextActionLabel(colIdx)}</button>`:''}
           ${canEdit? `<button class="tk-btn back" data-act="edit" style="max-width:34px;flex:0 0 34px;">✎</button>`:''}
+          ${canEdit? `<button class="tk-btn back" data-act="duplicate" style="max-width:34px;flex:0 0 34px;">⧉</button>`:''}
         </div>
       </div>
     `;
@@ -507,6 +509,7 @@
         if(act==='forward' && canFwd) await moveTask(t.id, COLUMNS[colIdx+1].key);
         else if(act==='back' && canBack) await moveTask(t.id, COLUMNS[colIdx-1].key);
         else if(act==='edit') openTaskModal(t.id);
+        else if(act==='duplicate') openDuplicateModal(t.id);
       });
     });
     return el;
@@ -544,7 +547,7 @@
     let html = isOwner() ? '<option value="">Unassigned</option>' : '';
     state.teams.forEach(team=>{
       let members = state.members.filter(m=>m.teamId===team.id);
-      if(!isOwner()) members = members.filter(m=> m.reportsTo===session.id);
+      if(!isOwner()) members = members.filter(m=> m.reportsTo===session.id || m.id===session.id);
       if(members.length===0) return;
       html += `<optgroup label="${escapeHtml(team.name)}">` + members.map(m=>`<option value="${m.id}">${escapeHtml(m.name)}</option>`).join('') + '</optgroup>';
     });
@@ -552,6 +555,48 @@
     sel.innerHTML = html;
     sel.value = selected || '';
   }
+
+  function assignableEngineers(){
+    if(isOwner()) return state.members;
+    return state.members.filter(m=> m.reportsTo===session.id || m.id===session.id);
+  }
+
+  function openDuplicateModal(taskId){
+    modalOpenFlag = true;
+    document.getElementById('dupTaskId').value = taskId;
+    document.getElementById('dupSame').checked = true;
+    const listEl = document.getElementById('dupEngineerList');
+    const engineers = assignableEngineers();
+    listEl.innerHTML = engineers.length ? engineers.map(m=>`
+      <label style="display:flex;align-items:center;gap:8px;padding:4px 0;font-size:13px;">
+        <input type="checkbox" class="dup-eng-checkbox" value="${m.id}"> ${escapeHtml(m.name)}
+      </label>
+    `).join('') : '<div style="font-size:12.5px;color:var(--text-dim-on-paper);">No one available to assign to.</div>';
+    listEl.style.display = 'none';
+    document.getElementById('duplicateModalOverlay').classList.add('open');
+  }
+  function closeDuplicateModal(){
+    document.getElementById('duplicateModalOverlay').classList.remove('open');
+    modalOpenFlag = false;
+  }
+  document.getElementById('dupSame').addEventListener('change', ()=>{ document.getElementById('dupEngineerList').style.display='none'; });
+  document.getElementById('dupSelected').addEventListener('change', ()=>{ document.getElementById('dupEngineerList').style.display='block'; });
+  document.getElementById('cancelDuplicateBtn').addEventListener('click', closeDuplicateModal);
+  document.getElementById('duplicateModalOverlay').addEventListener('click', (e)=>{ if(e.target.id==='duplicateModalOverlay') closeDuplicateModal(); });
+
+  document.getElementById('confirmDuplicateBtn').addEventListener('click', async ()=>{
+    const taskId = document.getElementById('dupTaskId').value;
+    let assignees = [];
+    if(document.getElementById('dupSelected').checked){
+      assignees = Array.from(document.querySelectorAll('.dup-eng-checkbox:checked')).map(cb=>cb.value);
+      if(assignees.length===0){ alert('Select at least one engineer.'); return; }
+    }
+    try{
+      await api('POST', `/api/tasks/${taskId}/duplicate`, {assignees});
+      closeDuplicateModal();
+      await refreshState();
+    }catch(e){ alert(e.message); }
+  });
 
   function openTaskModal(taskId){
     if(!canManageTasks()) return;
@@ -657,7 +702,7 @@
     const el = document.getElementById('dashboardView');
     if(isLeaderLike()){
       const pool = state.dashboardTasks || state.tasks;
-      const visibleMembers = isOwner() ? state.members : state.members.filter(m=>m.reportsTo===session.id);
+      const visibleMembers = isOwner() ? state.members : state.members.filter(m=>m.reportsTo===session.id || m.id===session.id);
       let rows = visibleMembers.map(m=>{
         const s = memberStats(m.id, pool);
         const pct = s.completed>0 ? Math.round((s.onTime/s.completed)*100) : 0;

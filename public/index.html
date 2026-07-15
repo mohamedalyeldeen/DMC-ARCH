@@ -137,6 +137,25 @@
   </div>
 </div>
 
+<div class="modal-overlay" id="duplicateModalOverlay">
+  <div class="modal">
+    <h3>Duplicate task</h3>
+    <input type="hidden" id="dupTaskId">
+    <p style="font-size:12.5px;color:var(--text-dim-on-paper);margin-top:-8px;">Copies the title, description, and priority. You'll set fresh dates on each copy afterward.</p>
+    <div class="field">
+      <label class="field-check" style="margin-bottom:8px;"><input type="radio" name="dupTarget" id="dupSame" checked><span style="margin:0;text-transform:none;font-size:13px;">Same assignee</span></label>
+      <label class="field-check"><input type="radio" name="dupTarget" id="dupSelected"><span style="margin:0;text-transform:none;font-size:13px;">Selected engineers</span></label>
+    </div>
+    <div class="field" id="dupEngineerList" style="display:none;max-height:220px;overflow-y:auto;border:1px solid var(--line-on-paper);border-radius:3px;padding:10px;"></div>
+    <div class="modal-actions">
+      <div style="margin-left:auto;display:flex;gap:10px;">
+        <button type="button" class="btn-cancel" id="cancelDuplicateBtn">Cancel</button>
+        <button type="button" class="btn-primary" id="confirmDuplicateBtn">Duplicate</button>
+      </div>
+    </div>
+  </div>
+</div>
+
 <script src="/app.js"></script>
 </body>
 </html>
