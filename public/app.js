@@ -224,12 +224,16 @@
       list.innerHTML = '<div class="notif-empty">No notifications yet.</div>';
       return;
     }
-    list.innerHTML = notifs.map(n => `
+    list.innerHTML = notifs.map(n => {
+      const task = state.tasks.find(t=>t.id===n.taskId);
+      const dateLine = task && task.startDate && task.endDate ? `${fmtDate(task.startDate)} → ${fmtDate(task.endDate)}` : 'No dates set';
+      return `
       <div class="notif-row ${n.read?'':'unread'}" data-id="${n.id}">
         ${n.read?'':'<span class="notif-dot"></span>'}${escapeHtml(n.message)}
-        <div class="notif-time">${fmtDateTime(n.createdAt)}</div>
+        <div class="notif-time">${n.actorName?`By ${escapeHtml(n.actorName)} · `:''}${dateLine} · ${fmtDateTime(n.createdAt)}</div>
       </div>
-    `).join('');
+    `;
+    }).join('');
     list.querySelectorAll('.notif-row').forEach(row=>{
       row.addEventListener('click', async ()=>{
         const id = row.dataset.id;
