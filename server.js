@@ -60,12 +60,12 @@ async function notifyAssignment(task, actor) {
 }
 
 // In-app notification (separate from, and in addition to, the optional email above).
-async function addNotification(userId, taskId, type, message) {
+async function addNotification(userId, taskId, type, message, actorName) {
   if (!userId) return;
   try {
     await updateTab('Notifications', rows => {
       rows.push({
-        id: genId('n'), userId, taskId, type, message, read: false,
+        id: genId('n'), userId, taskId, type, message, actorName: actorName || '', read: false,
         createdAt: new Date().toISOString()
       });
       return rows;
@@ -73,6 +73,10 @@ async function addNotification(userId, taskId, type, message) {
   } catch (e) {
     console.error('addNotification failed:', e.message);
   }
+}
+
+function actorLabel(actor) {
+  return actor.role === 'owner' ? 'The board owner' : (actor.name || 'A team leader');
 }
 
 // ---------- AUTH ----------
@@ -323,7 +327,7 @@ app.post('/api/tasks', requireAuth, requireLeader, async (req, res) => {
     });
     if (newTask.assignee) {
       await notifyAssignment(newTask, req.user);
-      await addNotification(newTask.assignee, newTask.id, 'assigned', `New task assigned: "${newTask.title}"`);
+      await addNotification(newTask.assignee, newTask.id, 'assigned', `New task assigned: "${newTask.title}"`, actorLabel(req.user));
     }
     res.json(newTask);
   } catch (e) { sendErr(res, e); }
@@ -393,9 +397,9 @@ app.put('/api/tasks/:id', requireAuth, requireLeader, async (req, res) => {
     });
     if (wasReassigned) {
       await notifyAssignment(updated, req.user);
-      await addNotification(updated.assignee, updated.id, 'reassigned', `Task reassigned to you: "${updated.title}"`);
+      await addNotification(updated.assignee, updated.id, 'reassigned', `Task reassigned to you: "${updated.title}"`, actorLabel(req.user));
     } else if (wasUpdated) {
-      await addNotification(updated.assignee, updated.id, 'updated', `Task updated: "${updated.title}"`);
+      await addNotification(updated.assignee, updated.id, 'updated', `Task updated: "${updated.title}"`, actorLabel(req.user));
     }
     res.json(updated);
   } catch (e) { sendErr(res, e); }
@@ -460,7 +464,10 @@ app.post('/api/tasks/:id/duplicate', requireAuth, requireLeader, async (req, res
     });
 
     for (const t of created) {
-      if (t.assignee) await notifyAssignment(t, req.user);
+      if (t.assignee) {
+        await notifyAssignment(t, req.user);
+        await addNotification(t.assignee, t.id, 'assigned', `New task assigned: "${t.title}"`, actorLabel(req.user));
+      }
     }
     res.json(created);
   } catch (e) { sendErr(res, e); }
