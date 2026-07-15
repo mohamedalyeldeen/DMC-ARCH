@@ -435,7 +435,11 @@
     board.innerHTML = '';
     const tasks = visibleTasks();
     COLUMNS.forEach((col, colIdx)=>{
-      const colTasks = tasks.filter(t=>t.status===col.key);
+      const colTasks = tasks.filter(t=>t.status===col.key).sort((a,b)=>{
+        const aEnd = a.endDate || '9999-99-99';
+        const bEnd = b.endDate || '9999-99-99';
+        return aEnd < bEnd ? -1 : aEnd > bEnd ? 1 : 0;
+      });
       const column = document.createElement('div');
       column.className = 'column';
       const lockNote = col.key==='submitted' ? '<div class="lock-note">Approval: leaders only</div>' : '';
@@ -467,7 +471,7 @@
     el.draggable = true;
     el.dataset.id = t.id;
     const member = memberById(t.assignee);
-    const overdue = t.due && t.due < todayStr() && t.status!=='done';
+    const overdue = t.endDate && t.endDate < todayStr() && t.status!=='done';
     let dots=''; for(let i=0;i<COLUMNS.length;i++){ dots += `<span class="${i<=colIdx?'done':''}"></span>`; }
 
     const canFwd = colIdx<COLUMNS.length-1 && canAdvance(t, colIdx);
@@ -484,9 +488,8 @@
         ${t.description? `<div class="ticket-desc">${escapeHtml(t.description)}</div>`:''}
         <div class="ticket-meta">
           <div class="ticket-assignee">${member? `<div class="avatar" style="width:18px;height:18px;font-size:8px;background:${member.color};">${initials(member.name)}</div><span>${escapeHtml(member.name)}</span>`:'<span style="color:var(--text-dim-on-paper);">Unassigned</span>'}</div>
-          <div class="ticket-due ${overdue?'overdue':''}">${overdue?'⚠ ':''}${fmtDate(t.due)}</div>
+          <div class="ticket-due ${overdue?'overdue':''}">${overdue?'⚠ ':''}${t.startDate && t.endDate ? fmtDate(t.startDate)+' → '+fmtDate(t.endDate) : 'No dates set'}</div>
         </div>
-        ${t.startDate && t.endDate ? `<div style="font-family:'IBM Plex Mono',monospace;font-size:10px;color:var(--text-dim-on-paper);margin-bottom:8px;">${fmtDate(t.startDate)} → ${fmtDate(t.endDate)}</div>` : ''}
         <div class="lifecycle">${dots}</div>
         <div class="ticket-actions">
           ${colIdx>0? `<button class="tk-btn back" data-act="back" ${canBack?'':'disabled'}>◂ Back</button>`:''}
@@ -565,7 +568,6 @@
       document.getElementById('fDesc').value=t.description||'';
       fillAssigneeOptions(t.assignee);
       document.getElementById('fPriority').value=t.priority;
-      document.getElementById('fDue').value=t.due||'';
       document.getElementById('fStartDate').value=t.startDate||'';
       document.getElementById('fEndDate').value=t.endDate||'';
       document.getElementById('fAllowOverlap').checked=false;
@@ -602,26 +604,25 @@
     const description = document.getElementById('fDesc').value.trim();
     const assignee = document.getElementById('fAssignee').value || '';
     const priority = document.getElementById('fPriority').value;
-    const due = document.getElementById('fDue').value || '';
     const isAuto = document.getElementById('fAutoSchedule').checked && !id;
     try{
       if(id){
         await api('PUT', '/api/tasks/'+id, {
-          title, description, assignee, priority, due,
+          title, description, assignee, priority,
           startDate: document.getElementById('fStartDate').value || '',
           endDate: document.getElementById('fEndDate').value || '',
           allowOverlap: document.getElementById('fAllowOverlap').checked
         });
       } else if(isAuto){
         await api('POST', '/api/tasks', {
-          title, description, assignee, priority, due,
+          title, description, assignee, priority,
           mode: 'auto',
           durationDays: parseInt(document.getElementById('fDuration').value,10) || 1,
           insertAfterTaskId: document.getElementById('fInsertAfter').value || null
         });
       } else {
         await api('POST', '/api/tasks', {
-          title, description, assignee, priority, due,
+          title, description, assignee, priority,
           startDate: document.getElementById('fStartDate').value || '',
           endDate: document.getElementById('fEndDate').value || '',
           allowOverlap: document.getElementById('fAllowOverlap').checked
