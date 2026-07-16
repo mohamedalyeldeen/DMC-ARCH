@@ -35,12 +35,12 @@ Google interactively.
 ## 2. Create the Google Sheet
 
 1. Create a new Google Sheet at [sheets.google.com](https://sheets.google.com).
-2. Rename the default tab (bottom-left) to `Config`. Then add three more tabs named exactly: `Teams`, `Members`, `Tasks` (case-sensitive, spelled exactly like this).
+2. Rename the default tab (bottom-left) to `Config`. Then add tabs named exactly: `Teams`, `Members`, `Tasks`, `Notifications`, `Achievements` (case-sensitive, spelled exactly like this).
 3. Click **Share** (top-right) and share the sheet with the `client_email` from step 1, giving it **Editor** access.
 4. Copy the Sheet ID from the URL — it's the long string between `/d/` and `/edit`:
    `https://docs.google.com/spreadsheets/d/`**`THIS_PART`**`/edit`
 
-You can leave all four tabs completely empty — the app writes the header rows
+You can leave all tabs completely empty — the app writes the header rows
 and data automatically the first time it runs.
 
 ## 3. Configure the server
@@ -329,3 +329,94 @@ working-week rule lives in one place — `isNonWorkingDay()` in
 `lib/scheduler.js` (and its client-side mirror, `isWeekendIso()` in
 `public/app.js`) — change the day-of-week check there and both the
 scheduling math and the Gantt view's weekend shading follow.
+
+## Phase 6: Recognition — celebrations, achievements, personal stats, Click Score
+
+A quiet, professional recognition layer sits on top of the existing board —
+nothing about how tasks are created, assigned, or scheduled changes.
+
+**One-time setup for existing deployments:** add a new tab to your Google
+Sheet named exactly `Achievements` (see step 2 above — a brand new sheet
+already includes it). Nothing else needs to change; the app writes its
+header row automatically the first time it runs, the same as your other
+tabs. The `Members` tab also gained three optional trailing columns
+(`noOverdueStreak`, `streakLastCheckedDate`, `tasksFinishedEarly`) — you
+don't need to add these yourself, the app fills them in the next time it
+writes to that tab.
+
+### The celebration
+
+The moment an engineer completes **every task currently assigned to them**,
+with all of them finished on or before their end date and none overdue, they
+get a one-time celebration: a brief confetti animation, a congratulations
+card with a randomly-chosen message (`🎉 Outstanding Work!`, `🚀 You're on
+Fire!`, `🏆 Mission Accomplished!`, and a few others), and a **Continue**
+button. It fades in and out rather than popping.
+
+This is entirely server-driven and durable, not a per-session thing like the
+Undo button: the moment a task is marked Done, the server checks whether
+that just cleared the person's whole queue on time, and if so, records the
+achievement as "unseen." Their own client picks it up on its next state
+refresh (login, or the regular ~8s poll) and shows the modal once; clicking
+Continue marks it seen for good. Reloading the page, logging out and back
+in, or another day going by never brings back a celebration that's already
+been shown — and clearing the queue again later earns a fresh one, since
+each occurrence is tracked separately by which task closed it out.
+
+### Achievements (extensible by design)
+
+Milestones are recorded in the new `Achievements` tab and shown quietly in
+each person's own **My Stats** panel — never as an interrupting popup,
+except for the clean-sweep celebration above. Implemented today:
+
+- **On-Time Master** — the clean-sweep celebration itself, recorded as a
+  lasting milestone alongside being shown as the popup.
+- **Perfect Week** / **Consistency** — 7 or 30 consecutive days with no
+  overdue tasks. Since there's no scheduled job in this app to check that at
+  midnight every day, the streak is updated opportunistically — at most once
+  per calendar day — whenever that person's own state is read (on login, on
+  poll, or right after a task completes). That's an honest approximation
+  rather than a continuous audit: it catches up the next time anyone looks,
+  which in practice means "correct as of the last time you or they opened
+  the app," not "guaranteed correct to the minute."
+- **Speed Runner** (finishing a task before its end date, not just on time)
+  is tracked as a running personal stat rather than a separate popup-style
+  achievement, specifically to avoid turning this into a stream of badges —
+  see the note in `lib/achievements.js`.
+
+Adding a new achievement type is adding one entry to the `DEFINITIONS` array
+in `lib/achievements.js` — nothing else needs to change unless it also
+deserves the animated celebration treatment (`celebration: true`) or needs
+new input data plumbed into its `check(ctx)` function.
+
+### Personal stats & Click Score
+
+Every engineer (and team leader, since they can self-assign) has a **My
+Stats** button in the top bar showing:
+
+- Tasks completed this month, on-time completion rate, current no-overdue
+  streak, tasks currently overdue, average days per completed task, and
+  Estimated-vs-Actual efficiency.
+- A **Click Score** out of 100, a star rating, and a plain-language tier
+  ("Excellent Performer," "Strong Performer," etc.), computed from: 40%
+  on-time completion, 25% estimated-vs-actual time, 20% no overdue tasks,
+  10% consistency (the streak above), and 5% "Future Quality Rating" — a
+  placeholder for a peer/manager quality review that doesn't exist yet in
+  this app. That last 5% defaults to full marks rather than silently
+  docking everyone's score for a metric nothing collects yet; see
+  `FUTURE_QUALITY_DEFAULT` in `lib/achievements.js` for where to wire in a
+  real value later.
+
+All of this updates automatically as tasks move through the board — there's
+no separate "recalculate" step.
+
+### A bug this surfaced (fixed)
+
+Building the stats above exposed a pre-existing scheduler issue: inserting a
+new task at the front of an engineer's queue shifted *every* dated task
+forward, including ones already marked Done — silently rewriting when a
+completed task actually happened, which also quietly skewed the existing
+Estimated-vs-Actual dashboard. Completed tasks' dates are now treated as a
+historical record and are no longer moved by later scheduling changes (see
+`insertWithShift` / `removeAndCompact` / `restoreRemovedTask` in
+`lib/scheduler.js`).

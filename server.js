@@ -8,6 +8,7 @@ const { readTab, updateTab, getConfig, setConfig } = require('./lib/sheets');
 const { sign, requireAuth, requireLeader, requireOwner, isLeader } = require('./lib/auth');
 const { sendMail, taskAssignedEmail } = require('./lib/mailer');
 const scheduler = require('./lib/scheduler');
+const achievements = require('./lib/achievements');
 
 const app = express();
 app.use(cors());
@@ -84,6 +85,69 @@ async function addNotification(userId, taskId, type, message, actorName) {
   } catch (e) {
     console.error('addNotification failed:', e.message);
   }
+}
+
+// Persists newly-earned achievements (from lib/achievements.evaluateAchievements)
+// as rows in the Achievements tab. `celebration`-type ones start unseen so
+// the owning member's client shows the modal once, then marks it seen.
+async function persistAchievements(memberId, earned) {
+  if (!earned.length) return [];
+  const saved = [];
+  await updateTab('Achievements', rows => {
+    earned.forEach(a => {
+      const row = {
+        id: genId('ach'), memberId, type: a.type, triggerKey: a.triggerKey,
+        icon: a.icon, title: a.title, message: a.message, celebration: a.celebration,
+        seen: !a.celebration, // non-celebration milestones don't need a "seen" gate
+        earnedAt: new Date().toISOString(), meta: {}
+      };
+      rows.push(row);
+      saved.push(row);
+    });
+    return rows;
+  });
+  return saved;
+}
+
+// Re-evaluates achievements for one member after something about their
+// tasks changed (a task completed) or just on a normal state read (for the
+// once-a-day streak touch). Skips the Members-tab write entirely once
+// today's streak check has already run for this member, so polling /api/state
+// every few seconds doesn't turn into a sheet write every few seconds.
+// Returns { newAchievements, member } — `member` is always the freshest
+// row available (only re-read from the sheet if it was actually touched).
+async function evaluateMemberAchievements(memberId, allTasks, justCompletedTask, membersCache) {
+  const memberTasks = allTasks.filter(t => t.assignee === memberId);
+  const todayStr = today();
+  let member = (membersCache || []).find(m => m.id === memberId);
+  const alreadyToday = member && member.streakLastCheckedDate === todayStr;
+
+  // Only a completion event needs to run even when the streak was already
+  // touched today (a task can complete more than once a day).
+  if (alreadyToday && !justCompletedTask) {
+    return { newAchievements: [], member };
+  }
+
+  await updateTab('Members', rows => {
+    const m = rows.find(r => r.id === memberId);
+    if (!m) return rows;
+    const streak = achievements.touchOverdueStreak(m, memberTasks, todayStr);
+    m.noOverdueStreak = streak.noOverdueStreak;
+    m.streakLastCheckedDate = streak.streakLastCheckedDate;
+    if (justCompletedTask && achievements.isFinishedEarly(justCompletedTask)) {
+      m.tasksFinishedEarly = (m.tasksFinishedEarly || 0) + 1;
+    }
+    member = m;
+    return rows;
+  });
+  if (!member) return { newAchievements: [], member: null };
+
+  const existing = await readTab('Achievements');
+  const existingKeys = new Set(existing.filter(a => a.memberId === memberId).map(a => `${a.type}:${a.triggerKey}`));
+  const ctx = { memberTasks, justCompletedTask, streak: { noOverdueStreak: member.noOverdueStreak }, todayStr };
+  const earned = achievements.evaluateAchievements(ctx, existingKeys);
+  const newAchievements = earned.length ? await persistAchievements(memberId, earned) : [];
+  return { newAchievements, member };
 }
 
 app.post('/api/auth/set-owner-name', requireAuth, requireOwner, async (req, res) => {
@@ -222,7 +286,42 @@ app.get('/api/state', requireAuth, async (req, res) => {
       ? notificationsAll.filter(n => n.userId === myUserId).sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || '')).slice(0, 50)
       : [];
     const unreadCount = notifications.filter(n => !n.read).length;
-    res.json({ teams, members, tasks, dashboardTasks, notifications, unreadCount, you: req.user });
+
+    // Personal recognition data — additive, and only for an actual engineer
+    // account (owner isn't assigned tasks, so there's nothing to score).
+    let me = null;
+    if (req.user.role !== 'owner') {
+      try {
+        const { member } = await evaluateMemberAchievements(req.user.id, tasksAll, null, membersRaw);
+        const memberForStats = member || membersRaw.find(m => m.id === req.user.id) || {};
+        const stats = achievements.computeMemberStats(tasksAll.filter(t => t.assignee === req.user.id), memberForStats, today());
+        const clickScore = achievements.computeClickScore(stats);
+        const achievementsAll = await readTab('Achievements').catch(() => []);
+        const mine = achievementsAll.filter(a => a.memberId === req.user.id).sort((a, b) => (b.earnedAt || '').localeCompare(a.earnedAt || ''));
+        const pendingCelebration = mine.find(a => a.celebration && !a.seen) || null;
+        me = { stats, clickScore, achievements: mine.slice(0, 20), pendingCelebration };
+      } catch (e) {
+        console.error('personal achievement data failed (has the Achievements tab been created in the Sheet yet?):', e.message);
+      }
+    }
+
+    res.json({ teams, members, tasks, dashboardTasks, notifications, unreadCount, you: req.user, me });
+  } catch (e) { sendErr(res, e); }
+});
+
+// Marks one of the current user's own achievements as seen — called right
+// after the celebration modal is shown/dismissed so it never appears again.
+app.post('/api/achievements/:id/seen', requireAuth, async (req, res) => {
+  try {
+    let result;
+    await updateTab('Achievements', rows => {
+      const a = rows.find(r => r.id === req.params.id && r.memberId === req.user.id);
+      if (!a) throw new Error('NOT_FOUND');
+      a.seen = true;
+      result = a;
+      return rows;
+    });
+    res.json(result);
   } catch (e) { sendErr(res, e); }
 });
 
@@ -560,7 +659,8 @@ app.post('/api/tasks/:id/move', requireAuth, async (req, res) => {
     let membersCache = null;
     if (req.user.role === 'member' && req.user.isTeamLead) membersCache = await readTab('Members');
     let result;
-    await updateTab('Tasks', rows => {
+    let becameDone = false;
+    const updatedRows = await updateTab('Tasks', rows => {
       const t = rows.find(r => r.id === req.params.id);
       if (!t) throw new Error('NOT_FOUND');
       const fromIdx = COLUMN_ORDER.indexOf(t.status);
@@ -580,8 +680,15 @@ app.post('/api/tasks/:id/move', requireAuth, async (req, res) => {
       t.completedAt = status === 'done' ? today() : (status === 'submitted' ? t.completedAt : '');
       t.history.push({ status, at: today() });
       result = t;
+      becameDone = status === 'done';
       return rows;
     });
+    // Recognition check: only worth doing the moment a task actually
+    // becomes done, since that's the only transition that can newly
+    // satisfy "every assigned task is complete."
+    if (becameDone && result && result.assignee) {
+      evaluateMemberAchievements(result.assignee, updatedRows, result, null).catch(e => console.error('achievement check failed:', e.message));
+    }
     res.json(result);
   } catch (e) { sendErr(res, e); }
 });
