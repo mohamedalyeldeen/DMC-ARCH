@@ -420,3 +420,45 @@ Estimated-vs-Actual dashboard. Completed tasks' dates are now treated as a
 historical record and are no longer moved by later scheduling changes (see
 `insertWithShift` / `removeAndCompact` / `restoreRemovedTask` in
 `lib/scheduler.js`).
+
+## Phase 7: Team leader scoping, Capacity tab fix, and approval notifications
+
+### Team leaders now only see their own team
+
+A team leader's board, sidebar, Gantt, Dashboard, and Capacity tab are now
+all scoped to their own team — their own roster and only tasks assigned
+within it (including their own self-assigned tasks). Previously, a team
+leader's `tasks` list quietly included the *entire* board across every
+team (a leftover from an earlier phase, noted at the time as "team leaders
+can still browse the whole board") while their Dashboard/Capacity views
+were already correctly scoped — an inconsistency that amounted to a
+cross-team visibility leak. All four (`teams`, `members`, `tasks`,
+`dashboardTasks`) are now scoped the same way in `GET /api/state`. Nothing
+about what a team leader is *allowed to do* changes — they could already
+only act on their own reports — this is purely about what they can see.
+
+### Capacity tab flicker fixed
+
+The Capacity tab fetches its data separately from the rest of the board
+(`GET /api/capacity`), and the client was wiping the whole panel back to a
+bare "Loading…" and rebuilding it from scratch every time — including on
+the routine ~8-second background poll while you just had that tab open, not
+only the first time you opened it. That produced a visible flash/reset
+every few seconds. It now only shows the loading state the first time;
+after that, refreshes update the list quietly in place.
+
+### New notifications for submit / approve / send-back
+
+Three transitions that previously happened silently now notify the person
+waiting on them:
+
+- A team member moving a task **In Progress → Submitted** notifies their
+  team leader that something needs review.
+- A leader moving a task **Submitted → In Progress** (sending it back)
+  notifies the assignee.
+- A leader moving a task **Submitted → Done** (approving it) notifies the
+  assignee.
+
+These reuse the existing in-app notification system (the bell icon) — no
+new UI, just new triggers alongside the existing "assigned"/"reassigned"
+notifications.

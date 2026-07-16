@@ -259,28 +259,39 @@ app.get('/api/capacity', requireAuth, requireLeader, async (req, res) => {
 
 app.get('/api/state', requireAuth, async (req, res) => {
   try {
-    const [teams, membersRaw, tasksAll] = await Promise.all([readTab('Teams'), readTab('Members'), readTab('Tasks')]);
+    const [teamsAll, membersRaw, tasksAll] = await Promise.all([readTab('Teams'), readTab('Members'), readTab('Tasks')]);
     let notificationsAll = [];
     try {
       notificationsAll = await readTab('Notifications');
     } catch (e) {
       console.error('Notifications tab unavailable (has it been created in the Sheet yet?):', e.message);
     }
-    const members = membersRaw.map(({ passwordHash, ...rest }) => rest);
     const leader = isLeader(req.user);
-    let tasks, dashboardTasks;
+    let tasks, dashboardTasks, teams, visibleMembersRaw;
     if (req.user.role === 'owner') {
       tasks = tasksAll;
       dashboardTasks = tasksAll;
+      teams = teamsAll;
+      visibleMembersRaw = membersRaw;
     } else if (req.user.isTeamLead) {
+      // A team leader only sees their own team: their team's roster, and
+      // only tasks assigned within it (including their own self-assigned
+      // tasks). This used to show the entire board — that was a visibility
+      // leak across teams, not an intentional feature.
+      const myTeamId = req.user.teamId;
       const myReportIds = new Set(membersRaw.filter(m => m.reportsTo === req.user.id).map(m => m.id));
       myReportIds.add(req.user.id); // Phase 2: team leaders can self-assign, include their own tasks too
-      tasks = tasksAll; // team leaders can still browse the whole board
-      dashboardTasks = tasksAll.filter(t => myReportIds.has(t.assignee));
+      tasks = tasksAll.filter(t => myReportIds.has(t.assignee));
+      dashboardTasks = tasks;
+      teams = teamsAll.filter(t => t.id === myTeamId);
+      visibleMembersRaw = membersRaw.filter(m => m.teamId === myTeamId || myReportIds.has(m.id));
     } else {
       tasks = tasksAll.filter(t => t.assignee === req.user.id);
       dashboardTasks = tasks;
+      teams = teamsAll.filter(t => t.id === req.user.teamId);
+      visibleMembersRaw = membersRaw.filter(m => m.teamId === req.user.teamId);
     }
+    const members = visibleMembersRaw.map(({ passwordHash, ...rest }) => rest);
     const myUserId = req.user.role === 'owner' ? null : req.user.id;
     const notifications = myUserId
       ? notificationsAll.filter(n => n.userId === myUserId).sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || '')).slice(0, 50)
@@ -651,6 +662,35 @@ app.post('/api/tasks/:id/duplicate', requireAuth, requireLeader, async (req, res
   } catch (e) { sendErr(res, e); }
 });
 
+// Notifies the relevant person for the transitions that matter most to
+// someone waiting on a decision: a team member submitting work for review
+// notifies their team leader (so it doesn't just sit there unnoticed), and
+// a leader approving or sending work back notifies the assignee either way
+// — right now they only find out by reloading the board.
+async function notifyMoveTransition(fromStatus, toStatus, task, actor) {
+  if (!task.assignee) return;
+  try {
+    const members = await readTab('Members');
+    const assigneeMember = members.find(m => m.id === task.assignee);
+    if (fromStatus === 'inprogress' && toStatus === 'submitted') {
+      const leadId = assigneeMember && assigneeMember.reportsTo;
+      if (leadId && leadId !== actor.id) {
+        await addNotification(leadId, task.id, 'submitted', `${(assigneeMember && assigneeMember.name) || 'A team member'} submitted "${task.title}" for review`, actorLabel(actor));
+      }
+    } else if (fromStatus === 'submitted' && toStatus === 'inprogress') {
+      if (task.assignee !== actor.id) {
+        await addNotification(task.assignee, task.id, 'sent_back', `"${task.title}" was sent back to In Progress`, actorLabel(actor));
+      }
+    } else if (fromStatus === 'submitted' && toStatus === 'done') {
+      if (task.assignee !== actor.id) {
+        await addNotification(task.assignee, task.id, 'approved', `"${task.title}" was approved and marked Done`, actorLabel(actor));
+      }
+    }
+  } catch (e) {
+    console.error('notifyMoveTransition failed:', e.message);
+  }
+}
+
 app.post('/api/tasks/:id/move', requireAuth, async (req, res) => {
   try {
     const { status } = req.body;
@@ -660,10 +700,12 @@ app.post('/api/tasks/:id/move', requireAuth, async (req, res) => {
     if (req.user.role === 'member' && req.user.isTeamLead) membersCache = await readTab('Members');
     let result;
     let becameDone = false;
+    let fromStatus = null;
     const updatedRows = await updateTab('Tasks', rows => {
       const t = rows.find(r => r.id === req.params.id);
       if (!t) throw new Error('NOT_FOUND');
       const fromIdx = COLUMN_ORDER.indexOf(t.status);
+      fromStatus = t.status;
       let isLeaderForThis = req.user.role === 'owner';
       if (!isLeaderForThis && req.user.isTeamLead) {
         isLeaderForThis = canLeadAssignTo(req.user, t.assignee, membersCache);
@@ -683,6 +725,9 @@ app.post('/api/tasks/:id/move', requireAuth, async (req, res) => {
       becameDone = status === 'done';
       return rows;
     });
+    if (result && fromStatus !== status) {
+      notifyMoveTransition(fromStatus, status, result, req.user).catch(e => console.error('move notification failed:', e.message));
+    }
     // Recognition check: only worth doing the moment a task actually
     // becomes done, since that's the only transition that can newly
     // satisfy "every assigned task is complete."
