@@ -218,3 +218,9 @@ input.date-invalid{border-color:var(--rust) !important;}
 .gantt-bar.drag-ghost{opacity:0.5;}
 .gantt-row-track.drop-target{background:rgba(226,137,43,0.08);}
 .gantt-empty{padding:30px;text-align:center;color:var(--text-dim-on-ink);font-size:12.5px;}
+
+/* ---------- DMC Contracting logo (sidebar, above the Click wordmark) ---------- */
+.brand-logo{display:block;width:64px;height:auto;margin:0 0 10px 2px;}
+
+/* ---------- DMC Contracting logo (login/setup screen) ---------- */
+.auth-logo{display:block;width:96px;height:auto;margin:0 auto 18px;}
