@@ -11,6 +11,9 @@
   let state = {teams:[], members:[], tasks:[], dashboardTasks:[]};
   let filter = null;    // null | {type:'member'|'team', id}
   let activeTab = 'board';
+  let capacityData = [];
+  let capacitySortMode = 'availability'; // 'availability' | 'capacity'
+  let evaFilters = { engineer:'', team:'', from:'', to:'' };
   let modalOpenFlag = false;
   let pollTimer = null;
 
@@ -56,7 +59,7 @@
     if(!pw1 || pw1.length<3){ err.textContent='Choose a password (3+ characters).'; return; }
     if(pw1!==pw2){ err.textContent='Passwords do not match.'; return; }
     try{
-      const data = await api('POST', '/api/auth/setup', {password: pw1});
+      const data = await api('POST', '/api/auth/setup', {password: pw1, ownerName: document.getElementById('setupOwnerName').value});
       session = data;
       enterApp();
     }catch(e){ err.textContent = e.message; }
@@ -176,29 +179,50 @@
     renderRoleBadge();
     renderNotifBadge();
     renderSidebar();
+    document.getElementById('tabCapacityBtn').style.display = isLeaderLike() ? 'inline-block' : 'none';
     if(activeTab==='board'){
       document.getElementById('viewTitle').textContent = isLeaderLike() ? "This Week's Jobs" : 'My Tasks';
       document.getElementById('board').style.display='flex';
       document.getElementById('dashboardView').style.display='none';
+      document.getElementById('capacityView').style.display='none';
       document.getElementById('newTaskBtn').style.display = canManageTasks() ? 'inline-block' : 'none';
       renderBoard();
-    } else {
+    } else if(activeTab==='dashboard'){
       document.getElementById('viewTitle').textContent = 'Performance Ledger';
       document.getElementById('board').style.display='none';
       document.getElementById('dashboardView').style.display='block';
+      document.getElementById('capacityView').style.display='none';
       document.getElementById('newTaskBtn').style.display='none';
       renderDashboard();
+    } else {
+      document.getElementById('viewTitle').textContent = 'Capacity';
+      document.getElementById('board').style.display='none';
+      document.getElementById('dashboardView').style.display='none';
+      document.getElementById('capacityView').style.display='block';
+      document.getElementById('newTaskBtn').style.display='none';
+      loadAndRenderCapacity();
     }
     renderStats();
   }
 
   function renderRoleBadge(){
     let label = '';
-    if(isOwner()) label = 'Owner';
+    if(isOwner()) label = (session.name || 'Owner') + ' (Owner)';
     else if(isTeamLead()) label = 'Team Leader — ' + (teamById(session.teamId)||{name:''}).name;
     else label = 'Member — ' + (teamById(session.teamId)||{name:''}).name;
     document.getElementById('roleBadge').textContent = label;
+    document.getElementById('ownerNameBtn').style.display = isOwner() ? 'inline-block' : 'none';
   }
+  document.getElementById('ownerNameBtn').addEventListener('click', async ()=>{
+    const name = prompt('Enter your name (shown to your team instead of "The board owner"):', session.name || '');
+    if(!name || !name.trim()) return;
+    try{
+      const data = await api('POST', '/api/auth/set-owner-name', {name: name.trim()});
+      session.token = data.token;
+      session.name = data.name;
+      renderRoleBadge();
+    }catch(e){ alert(e.message); }
+  });
 
   function renderNotifBadge(){
     const count = state.unreadCount || 0;
@@ -267,12 +291,21 @@
     activeTab='board';
     document.getElementById('tabBoardBtn').classList.add('active');
     document.getElementById('tabDashBtn').classList.remove('active');
+    document.getElementById('tabCapacityBtn').classList.remove('active');
     renderApp();
   });
   document.getElementById('tabDashBtn').addEventListener('click', ()=>{
     activeTab='dashboard';
     document.getElementById('tabDashBtn').classList.add('active');
     document.getElementById('tabBoardBtn').classList.remove('active');
+    document.getElementById('tabCapacityBtn').classList.remove('active');
+    renderApp();
+  });
+  document.getElementById('tabCapacityBtn').addEventListener('click', ()=>{
+    activeTab='capacity';
+    document.getElementById('tabCapacityBtn').classList.add('active');
+    document.getElementById('tabBoardBtn').classList.remove('active');
+    document.getElementById('tabDashBtn').classList.remove('active');
     renderApp();
   });
 
@@ -772,6 +805,90 @@
     return {total:tasks.length, completed:completed.length, onTime:onTime.length, open:tasks.length-completed.length};
   }
 
+  function diffDaysInclusiveLocal(startStr, endStr){
+    const s = new Date(startStr+'T00:00:00'), e = new Date(endStr+'T00:00:00');
+    return Math.round((e-s)/86400000)+1;
+  }
+
+  function getActualStartDate(t){
+    const hist = (t.history||[]).find(h=>h.status==='inprogress');
+    return (hist && hist.at) || t.startDate || t.createdAt || null;
+  }
+
+  function computeEstimatedVsActual(tasks, filters){
+    const rows = tasks.filter(t=>{
+      if(t.status!=='done') return false;
+      if(!t.startDate || !t.endDate || !t.completedAt) return false;
+      if(filters.engineer && t.assignee!==filters.engineer) return false;
+      if(filters.team){
+        const m = memberById(t.assignee);
+        if(!m || m.teamId!==filters.team) return false;
+      }
+      if(filters.from && t.completedAt < filters.from) return false;
+      if(filters.to && t.completedAt > filters.to) return false;
+      return true;
+    });
+    let estTotal=0, actTotal=0;
+    rows.forEach(t=>{
+      const est = diffDaysInclusiveLocal(t.startDate, t.endDate);
+      const actualStart = getActualStartDate(t);
+      const act = actualStart ? diffDaysInclusiveLocal(actualStart, t.completedAt) : est;
+      estTotal += est; actTotal += act;
+    });
+    const diff = actTotal - estTotal;
+    const efficiency = actTotal>0 ? Math.round((estTotal/actTotal)*100) : 100;
+    return {count: rows.length, estTotal, actTotal, diff, efficiency};
+  }
+
+  function renderEstimatedVsActualCard(pool){
+    const stats = computeEstimatedVsActual(pool, evaFilters);
+    const engineerOptions = isLeaderLike()
+      ? (isOwner() ? state.members : state.members.filter(m=>m.reportsTo===session.id || m.id===session.id))
+      : [];
+    const filterRow = isLeaderLike() ? `
+      <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px;">
+        <select id="evaEngineerFilter" style="padding:6px 8px;border-radius:3px;border:1px solid var(--line-on-ink);background:var(--ink);color:var(--text-on-ink);font-size:12px;">
+          <option value="">All engineers</option>
+          ${engineerOptions.map(m=>`<option value="${m.id}" ${evaFilters.engineer===m.id?'selected':''}>${escapeHtml(m.name)}</option>`).join('')}
+        </select>
+        <select id="evaTeamFilter" style="padding:6px 8px;border-radius:3px;border:1px solid var(--line-on-ink);background:var(--ink);color:var(--text-on-ink);font-size:12px;">
+          <option value="">All teams</option>
+          ${state.teams.map(t=>`<option value="${t.id}" ${evaFilters.team===t.id?'selected':''}>${escapeHtml(t.name)}</option>`).join('')}
+        </select>
+        <input type="date" id="evaFromDate" value="${evaFilters.from}" style="padding:6px 8px;border-radius:3px;border:1px solid var(--line-on-ink);background:var(--ink);color:var(--text-on-ink);font-size:12px;">
+        <input type="date" id="evaToDate" value="${evaFilters.to}" style="padding:6px 8px;border-radius:3px;border:1px solid var(--line-on-ink);background:var(--ink);color:var(--text-on-ink);font-size:12px;">
+      </div>
+    ` : `
+      <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px;">
+        <input type="date" id="evaFromDate" value="${evaFilters.from}" style="padding:6px 8px;border-radius:3px;border:1px solid var(--line-on-ink);background:var(--ink);color:var(--text-on-ink);font-size:12px;">
+        <input type="date" id="evaToDate" value="${evaFilters.to}" style="padding:6px 8px;border-radius:3px;border:1px solid var(--line-on-ink);background:var(--ink);color:var(--text-on-ink);font-size:12px;">
+      </div>
+    `;
+    return `
+      <div class="dash-card">
+        <h3>Estimated vs Actual (${stats.count} completed task${stats.count===1?'':'s'})</h3>
+        ${filterRow}
+        <div class="dash-stats-row">
+          <div class="dash-stat"><div class="num">${stats.estTotal}</div><div class="lbl">Estimated days</div></div>
+          <div class="dash-stat"><div class="num">${stats.actTotal}</div><div class="lbl">Actual days</div></div>
+          <div class="dash-stat"><div class="num">${stats.diff>=0?'+':''}${stats.diff}</div><div class="lbl">Difference</div></div>
+          <div class="dash-stat"><div class="num">${stats.efficiency}%</div><div class="lbl">Efficiency</div></div>
+        </div>
+      </div>
+    `;
+  }
+
+  function wireEstimatedVsActualFilters(){
+    const eng = document.getElementById('evaEngineerFilter');
+    const team = document.getElementById('evaTeamFilter');
+    const from = document.getElementById('evaFromDate');
+    const to = document.getElementById('evaToDate');
+    if(eng) eng.addEventListener('change', ()=>{ evaFilters.engineer = eng.value; renderDashboard(); });
+    if(team) team.addEventListener('change', ()=>{ evaFilters.team = team.value; renderDashboard(); });
+    if(from) from.addEventListener('change', ()=>{ evaFilters.from = from.value; renderDashboard(); });
+    if(to) to.addEventListener('change', ()=>{ evaFilters.to = to.value; renderDashboard(); });
+  }
+
   function renderDashboard(){
     const el = document.getElementById('dashboardView');
     if(isLeaderLike()){
@@ -796,7 +913,9 @@
             <tbody>${rows || '<tr><td colspan="6">No members yet</td></tr>'}</tbody>
           </table>
         </div>
+        ${renderEstimatedVsActualCard(pool)}
       `;
+      wireEstimatedVsActualFilters();
     } else {
       const pool = state.dashboardTasks || state.tasks;
       const s = memberStats(session.id, pool);
@@ -815,8 +934,58 @@
             <span style="font-family:'IBM Plex Mono',monospace;font-size:12px;color:var(--text-dim-on-ink);">${pct}% on-time completion</span>
           </div>
         </div>
+        ${renderEstimatedVsActualCard(pool)}
       `;
+      wireEstimatedVsActualFilters();
     }
+  }
+
+  async function loadAndRenderCapacity(){
+    const el = document.getElementById('capacityView');
+    el.innerHTML = '<div class="notif-empty">Loading…</div>';
+    try{
+      const data = await api('GET', '/api/capacity');
+      capacityData = data.capacity || [];
+      renderCapacityList();
+    }catch(e){
+      el.innerHTML = `<div class="notif-empty">${escapeHtml(e.message)}</div>`;
+    }
+  }
+
+  function renderCapacityList(){
+    const el = document.getElementById('capacityView');
+    let rows = capacityData.slice();
+    if(capacitySortMode==='availability'){
+      rows.sort((a,b)=> a.nextAvailable < b.nextAvailable ? -1 : a.nextAvailable > b.nextAvailable ? 1 : 0);
+    } else {
+      rows.sort((a,b)=> b.capacityPct - a.capacityPct);
+    }
+    const today = todayStr();
+    const rowsHtml = rows.map(m=>{
+      const daysUntilFree = Math.max(0, Math.round((new Date(m.nextAvailable+'T00:00:00') - new Date(today+'T00:00:00')) / 86400000));
+      const availLabel = daysUntilFree<=0 ? 'Available now' : `Available in ${daysUntilFree} day${daysUntilFree===1?'':'s'}`;
+      return `
+        <div class="capacity-row">
+          <div class="capacity-name">${escapeHtml(m.name)}</div>
+          <div class="capacity-bar-track bar-track"><div class="bar-fill" style="width:${m.capacityPct}%;"></div></div>
+          <div class="capacity-pct-label">${m.capacityPct}%</div>
+          <div class="capacity-avail">${availLabel}</div>
+          <div style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:var(--text-dim-on-ink);">${m.totalAssigned} open · ${m.occupiedDays}d scheduled</div>
+        </div>
+      `;
+    }).join('');
+    el.innerHTML = `
+      <div class="dash-card">
+        <h3>Team capacity</h3>
+        <div class="sort-toggle">
+          <button class="mini-btn ${capacitySortMode==='availability'?'primary':''}" id="sortByAvailBtn">Sort by availability</button>
+          <button class="mini-btn ${capacitySortMode==='capacity'?'primary':''}" id="sortByCapBtn">Sort by capacity %</button>
+        </div>
+        ${rowsHtml || '<div class="notif-empty">No one to show yet.</div>'}
+      </div>
+    `;
+    document.getElementById('sortByAvailBtn').addEventListener('click', ()=>{ capacitySortMode='availability'; renderCapacityList(); });
+    document.getElementById('sortByCapBtn').addEventListener('click', ()=>{ capacitySortMode='capacity'; renderCapacityList(); });
   }
 
   function doExport(){

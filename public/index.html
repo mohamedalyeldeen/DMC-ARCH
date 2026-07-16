@@ -17,6 +17,7 @@
     <div id="setupPanel" style="display:none;">
       <h2>Welcome to Click</h2>
       <div class="sub">First-time setup</div>
+      <div class="field"><label>Your name (shown to your team)</label><input type="text" id="setupOwnerName" placeholder="e.g. Mohamed Abdelrahman"></div>
       <div class="field"><label>Create an owner password</label><input type="password" id="setupPw1"></div>
       <div class="field"><label>Confirm password</label><input type="password" id="setupPw2"></div>
       <button class="full-btn" id="setupBtn">Create owner account</button>
@@ -51,6 +52,7 @@
       <div class="tabs">
         <button class="tab-btn active" id="tabBoardBtn">Board</button>
         <button class="tab-btn" id="tabDashBtn">Dashboard</button>
+        <button class="tab-btn" id="tabCapacityBtn" style="display:none;">Capacity</button>
       </div>
       <h1 id="viewTitle">This Week's Jobs</h1>
       <input type="text" class="search-box" id="searchBox" placeholder="Search tasks…">
@@ -59,6 +61,7 @@
       <div class="user-strip">
         <button class="mini-btn" id="notifBtn" style="position:relative;">🔔<span id="notifBadge" style="display:none;position:absolute;top:-6px;right:-6px;background:var(--rust);color:#fff;border-radius:10px;padding:1px 5px;font-size:9px;font-family:'IBM Plex Mono',monospace;"></span></button>
         <span class="role-badge" id="roleBadge"></span>
+        <button class="mini-btn" id="ownerNameBtn" style="display:none;">Name</button>
         <button class="mini-btn" id="changePwBtn">Password</button>
         <button class="mini-btn primary" id="saveCloseBtn">Save &amp; close</button>
         <button class="mini-btn" id="logoutBtn">Log out</button>
@@ -66,6 +69,7 @@
     </div>
     <div class="board" id="board"></div>
     <div class="dash-wrap" id="dashboardView" style="display:none;"></div>
+    <div class="dash-wrap" id="capacityView" style="display:none;"></div>
   </main>
 </div>
 

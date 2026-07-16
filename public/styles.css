@@ -150,6 +150,12 @@ body{background:var(--ink);color:var(--text-on-ink);font-family:'Inter',sans-ser
 .dash-table td{padding:9px 10px;border-bottom:1px solid var(--line-on-ink);font-size:12.5px;}
 .bar-track{background:var(--ink);border-radius:3px;height:8px;overflow:hidden;width:90px;}
 .bar-fill{height:100%;background:var(--teal);}
+.capacity-bar-track{width:160px;}
+.capacity-row{display:flex;align-items:center;gap:16px;padding:12px 0;border-bottom:1px solid var(--line-on-ink);}
+.capacity-name{width:160px;flex-shrink:0;font-weight:600;font-size:13.5px;}
+.capacity-avail{font-family:'IBM Plex Mono',monospace;font-size:11px;color:var(--text-dim-on-ink);width:150px;flex-shrink:0;}
+.capacity-pct-label{font-family:'IBM Plex Mono',monospace;font-size:11px;width:40px;flex-shrink:0;text-align:right;}
+.sort-toggle{display:flex;gap:8px;margin-bottom:16px;}
 
 .notif-row{padding:12px 4px;border-bottom:1px dashed var(--line-on-paper);font-size:12.5px;cursor:pointer;}
 .notif-row:hover{background:rgba(27,36,48,0.04);}
