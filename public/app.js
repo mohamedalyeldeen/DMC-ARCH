@@ -240,6 +240,7 @@
       const data = await api('GET', '/api/state');
       state = data;
       renderApp();
+      maybeShowCelebration();
     }catch(e){
       if(e.message && e.message.toLowerCase().includes('session')){
         document.getElementById('logoutBtn').click();
@@ -253,6 +254,7 @@
     renderNotifBadge();
     renderSidebar();
     document.getElementById('tabCapacityBtn').style.display = isLeaderLike() ? 'inline-block' : 'none';
+    document.getElementById('myStatsBtn').style.display = isOwner() ? 'none' : 'inline-block';
     document.getElementById('board').style.display='none';
     document.getElementById('ganttView').style.display='none';
     document.getElementById('dashboardView').style.display='none';
@@ -1133,6 +1135,157 @@
       });
     });
   }
+
+  // ---------- RECOGNITION & ACHIEVEMENTS ----------
+  // Server sends this member's stats/Click Score/achievement history as
+  // `state.me` on every /api/state read (see server.js). The only thing
+  // this client needs to manage itself is: (a) showing the one-time
+  // celebration when `state.me.pendingCelebration` is set, and (b)
+  // rendering the "My Stats" panel on demand. Nothing here decides *whether*
+  // an achievement was earned — that's entirely server-side, so reloading
+  // the page or polling never re-triggers a celebration that's already been
+  // marked seen.
+  let celebrationActive = false;
+
+  function maybeShowCelebration(){
+    if(celebrationActive) return;
+    const c = state.me && state.me.pendingCelebration;
+    if(!c) return;
+    celebrationActive = true;
+    showCelebration(c);
+  }
+
+  function showCelebration(c){
+    document.getElementById('celebrationIcon').textContent = c.icon;
+    document.getElementById('celebrationTitle').textContent = c.title;
+    const name = (session && session.name) ? session.name.split(/\s+/)[0] : 'there';
+    document.getElementById('celebrationMessage').textContent =
+      `Great job, ${name}! You completed all of your assigned tasks on time. Keep up the excellent work!`;
+    const overlay = document.getElementById('celebrationOverlay');
+    overlay.classList.add('open');
+    const stopConfetti = launchConfetti(document.getElementById('celebrationCanvas'));
+    const continueBtn = document.getElementById('celebrationContinueBtn');
+    const onContinue = async () => {
+      continueBtn.removeEventListener('click', onContinue);
+      overlay.classList.remove('open');
+      stopConfetti();
+      celebrationActive = false;
+      try{ await api('POST', `/api/achievements/${c.id}/seen`); }catch(e){ /* best-effort — worst case it's re-marked seen next load */ }
+    };
+    continueBtn.addEventListener('click', onContinue);
+  }
+
+  // Lightweight canvas confetti — a fixed, small particle count, plain
+  // fillRect/arc draws, and a hard stop after ~4s (it cancels its own
+  // animation frame and clears the canvas rather than looping forever), so
+  // this never becomes a background performance drain.
+  function launchConfetti(canvas){
+    const ctx = canvas.getContext('2d');
+    function resize(){ canvas.width = window.innerWidth; canvas.height = window.innerHeight; }
+    resize();
+    window.addEventListener('resize', resize);
+    const colors = ['#E2892B','#3E7C74','#BD5238','#7C6AA6','#F6F1E4','#4C7EA8'];
+    const PARTICLE_COUNT = 90;
+    const DURATION_MS = 4000;
+    const particles = [];
+    for(let i=0;i<PARTICLE_COUNT;i++){
+      particles.push({
+        x: Math.random()*canvas.width,
+        y: -20 - Math.random()*canvas.height*0.4,
+        vx: (Math.random()-0.5)*2.2,
+        vy: 2.5 + Math.random()*3,
+        size: 4 + Math.random()*5,
+        color: colors[Math.floor(Math.random()*colors.length)],
+        rotation: Math.random()*360,
+        vr: (Math.random()-0.5)*12,
+        round: Math.random() > 0.5
+      });
+    }
+    let start = null, rafId = null;
+    function frame(ts){
+      if(start === null) start = ts;
+      const elapsed = ts - start;
+      ctx.clearRect(0,0,canvas.width,canvas.height);
+      particles.forEach(p=>{
+        p.x += p.vx; p.y += p.vy; p.vy += 0.02; p.rotation += p.vr;
+        ctx.save();
+        ctx.translate(p.x, p.y);
+        ctx.rotate(p.rotation * Math.PI/180);
+        ctx.fillStyle = p.color;
+        if(p.round){ ctx.beginPath(); ctx.arc(0,0,p.size/2,0,Math.PI*2); ctx.fill(); }
+        else{ ctx.fillRect(-p.size/2, -p.size/2, p.size, p.size*0.6); }
+        ctx.restore();
+      });
+      if(elapsed < DURATION_MS){
+        rafId = requestAnimationFrame(frame);
+      }else{
+        ctx.clearRect(0,0,canvas.width,canvas.height);
+      }
+    }
+    rafId = requestAnimationFrame(frame);
+    return function stop(){
+      if(rafId) cancelAnimationFrame(rafId);
+      window.removeEventListener('resize', resize);
+      ctx.clearRect(0,0,canvas.width,canvas.height);
+    };
+  }
+
+  // ---------- My Stats panel ----------
+  function renderStatsModal(){
+    const me = state.me;
+    const body = document.getElementById('statsModalBody');
+    if(!me){
+      body.innerHTML = `<p style="font-size:13px;color:var(--text-dim-on-paper);">Stats aren't available yet — try again after your next task update.</p>`;
+      return;
+    }
+    const { stats, clickScore, achievements } = me;
+    const starsFilled = '★'.repeat(clickScore.stars);
+    const starsEmpty = '☆'.repeat(5 - clickScore.stars);
+    const eva = stats.eva;
+    const evaLabel = eva.actualDays > 0 ? `${eva.efficiencyPct}%` : '—';
+
+    const achvHtml = achievements.length
+      ? achievements.map(a => `
+          <div class="achv-row">
+            <span class="achv-icon">${a.icon}</span>
+            <span class="achv-title">${escapeHtml(a.title)}</span>
+            <span class="achv-date">${fmtDate((a.earnedAt||'').slice(0,10))}</span>
+          </div>`).join('')
+      : `<div class="achv-empty">No milestones yet — they'll show up here as you complete work.</div>`;
+
+    body.innerHTML = `
+      <div class="click-score-block">
+        <div>
+          <div class="click-score-num">${clickScore.score}<span> / 100</span></div>
+          <div class="click-score-stars">${starsFilled}${starsEmpty}</div>
+          <div class="click-score-rating">${escapeHtml(clickScore.rating)}</div>
+        </div>
+        <div style="margin-left:auto;font-size:11px;color:var(--text-dim-on-paper);line-height:1.7;font-family:'IBM Plex Mono',monospace;">
+          On-time ${clickScore.breakdown.onTime}% · Est. vs actual ${clickScore.breakdown.eva}%<br>
+          No overdue ${clickScore.breakdown.noOverdue}% · Consistency ${clickScore.breakdown.consistency}%
+        </div>
+      </div>
+      <div class="stats-section-label">This month</div>
+      <div class="stats-grid">
+        <div class="stat-box"><div class="num">${stats.completedThisMonth}</div><div class="lbl">Completed</div></div>
+        <div class="stat-box"><div class="num">${stats.onTimeRate}%</div><div class="lbl">On-time rate</div></div>
+        <div class="stat-box"><div class="num">${stats.currentStreak}</div><div class="lbl">Day streak</div></div>
+        <div class="stat-box"><div class="num">${stats.overdueCount}</div><div class="lbl">Overdue now</div></div>
+        <div class="stat-box"><div class="num">${stats.avgCompletionDays ?? '—'}</div><div class="lbl">Avg. days/task</div></div>
+        <div class="stat-box"><div class="num">${evaLabel}</div><div class="lbl">Est. vs actual</div></div>
+      </div>
+      <div class="stats-section-label">Milestones</div>
+      <div class="achv-list">${achvHtml}</div>
+    `;
+  }
+
+  document.getElementById('myStatsBtn').addEventListener('click', ()=>{
+    renderStatsModal();
+    document.getElementById('statsModalOverlay').classList.add('open');
+  });
+  document.getElementById('closeStatsBtn').addEventListener('click', ()=>{
+    document.getElementById('statsModalOverlay').classList.remove('open');
+  });
 
   // ---------- DASHBOARD ----------
   function memberStats(memberId, pool){

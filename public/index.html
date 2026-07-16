@@ -61,6 +61,7 @@
       <div class="stats" id="statsLine"></div>
       <button class="primary-btn" id="newTaskBtn" style="display:none;">+ Assign task</button>
       <div class="user-strip">
+        <button class="mini-btn" id="myStatsBtn" style="display:none;">🏆 My Stats</button>
         <button class="mini-btn" id="notifBtn" style="position:relative;">🔔<span id="notifBadge" style="display:none;position:absolute;top:-6px;right:-6px;background:var(--rust);color:#fff;border-radius:10px;padding:1px 5px;font-size:9px;font-family:'IBM Plex Mono',monospace;"></span></button>
         <span class="role-badge" id="roleBadge"></span>
         <button class="mini-btn" id="undoBtn" style="display:none;" title="Undo only covers actions you've taken this session, on this device — it won't survive a page reload and can't undo changes someone else made in the meantime."></button>
@@ -179,6 +180,28 @@
         <button type="button" class="btn-primary" id="confirmDuplicateBtn">Duplicate</button>
       </div>
     </div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="statsModalOverlay">
+  <div class="modal" id="statsModal" style="max-width:560px;">
+    <h3>My Performance</h3>
+    <div id="statsModalBody"></div>
+    <div class="modal-actions">
+      <div style="margin-left:auto;display:flex;gap:10px;">
+        <button type="button" class="btn-cancel" id="closeStatsBtn">Close</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="celebration-overlay" id="celebrationOverlay">
+  <canvas id="celebrationCanvas"></canvas>
+  <div class="celebration-card">
+    <div class="celebration-icon" id="celebrationIcon">🎉</div>
+    <h2 id="celebrationTitle">Outstanding Work!</h2>
+    <p id="celebrationMessage">Great job! You completed all of your assigned tasks on time. Keep up the excellent work!</p>
+    <button type="button" class="celebration-continue" id="celebrationContinueBtn">Continue</button>
   </div>
 </div>
 
