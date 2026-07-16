@@ -27,15 +27,31 @@
   let ganttZoom = 'week';        // 'day' | 'week' | 'month'
   const GANTT_DAY_WIDTH = {day:36, week:14, month:5};
 
-  function todayStr(){ return new Date().toISOString().slice(0,10); }
-  function fmtDate(iso){ if(!iso) return '—'; const d=new Date(iso+'T00:00:00'); return d.toLocaleDateString('en-US',{month:'short',day:'numeric'}); }
+  function todayStr(){
+    // Local calendar day (not UTC) — this is what "today" should mean to
+    // whoever is looking at the board, and it's what overdue/today-line
+    // comparisons against startDate/endDate are meant to line up with.
+    const d = new Date();
+    return d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0');
+  }
+  // Every YYYY-MM-DD string in this app (startDate/endDate/etc.) is a plain
+  // calendar date with no timezone attached. Parsing it as local midnight
+  // and then reading it back out via toISOString() (UTC) — the pattern this
+  // codebase used to use — silently shifts by a day in any timezone ahead of
+  // UTC, and can make "add one day" return the *same* day. That turns any
+  // while-loop that advances by that amount into an infinite loop (this is
+  // what froze the Gantt tab). Parsing and reading every date-only string in
+  // UTC throughout keeps the arithmetic identical no matter what timezone
+  // the browser is in.
+  function parseIsoUTC(iso){ return new Date(iso + 'T00:00:00Z'); }
+  function fmtDate(iso){ if(!iso) return '—'; return parseIsoUTC(iso).toLocaleDateString('en-US',{month:'short',day:'numeric',timeZone:'UTC'}); }
   function escapeHtml(str){ const d=document.createElement('div'); d.textContent = str==null?'':String(str); return d.innerHTML; }
   function initials(name){ return (name||'').trim().split(/\s+/).map(w=>w[0]).slice(0,2).join('').toUpperCase(); }
 
   // ---------- WEEKEND POLICY (Friday & Saturday are non-working days) ----------
-  function isWeekendIso(iso){ if(!iso) return false; const dow = new Date(iso+'T00:00:00').getDay(); return dow===5 || dow===6; }
-  function addDaysIso(iso, days){ const d=new Date(iso+'T00:00:00'); d.setDate(d.getDate()+days); return d.toISOString().slice(0,10); }
-  function daysBetweenIso(a,b){ return Math.round((new Date(b+'T00:00:00') - new Date(a+'T00:00:00'))/86400000); }
+  function isWeekendIso(iso){ if(!iso) return false; const dow = parseIsoUTC(iso).getUTCDay(); return dow===5 || dow===6; }
+  function addDaysIso(iso, days){ const d=parseIsoUTC(iso); d.setUTCDate(d.getUTCDate()+days); return d.toISOString().slice(0,10); }
+  function daysBetweenIso(a,b){ return Math.round((parseIsoUTC(b) - parseIsoUTC(a))/86400000); }
 
   // ---------- API HELPER ----------
   async function api(method, url, body){
@@ -73,8 +89,9 @@
     if(!btn) return;
     if(undoStack.length===0){ btn.style.display='none'; return; }
     const top = undoStack[undoStack.length-1];
-    btn.style.display = 'inline-block';
-    btn.textContent = '↺ Undo: ' + top.label;
+    btn.style.display = 'inline-flex';
+    btn.textContent = '↺';
+    btn.title = `Undo: ${top.label}\n\nOnly covers actions you've taken this session, on this device — it won't survive a page reload and can't undo changes someone else made in the meantime.`;
   }
   document.getElementById('undoBtn').addEventListener('click', async ()=>{
     if(undoStack.length===0) return;
@@ -939,9 +956,9 @@
     if(ganttZoom==='month'){
       let cursor = range.start;
       while(cursor < rangeEndExclusive){
-        const d = new Date(cursor+'T00:00:00');
-        const monthLabel = d.toLocaleDateString('en-US',{month:'short',year:'numeric'});
-        const firstOfNextMonth = new Date(d.getFullYear(), d.getMonth()+1, 1).toISOString().slice(0,10);
+        const d = parseIsoUTC(cursor);
+        const monthLabel = d.toLocaleDateString('en-US',{month:'short',year:'numeric',timeZone:'UTC'});
+        const firstOfNextMonth = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth()+1, 1)).toISOString().slice(0,10);
         const segEnd = firstOfNextMonth < rangeEndExclusive ? firstOfNextMonth : rangeEndExclusive;
         const segDays = daysBetweenIso(cursor, segEnd);
         html += `<div class="gantt-head-cell" style="width:${segDays*dayWidth}px;">${monthLabel}</div>`;
@@ -960,8 +977,8 @@
       let cursor = range.start;
       while(cursor < rangeEndExclusive){
         const weekend = isWeekendIso(cursor);
-        const d = new Date(cursor+'T00:00:00');
-        html += `<div class="gantt-head-cell gantt-day-cell ${weekend?'gantt-weekend':''}" style="width:${dayWidth}px;" title="${cursor}">${d.getDate()}</div>`;
+        const d = parseIsoUTC(cursor);
+        html += `<div class="gantt-head-cell gantt-day-cell ${weekend?'gantt-weekend':''}" style="width:${dayWidth}px;" title="${cursor}">${d.getUTCDate()}</div>`;
         cursor = addDaysIso(cursor,1);
       }
     }
@@ -1126,7 +1143,7 @@
   }
 
   function diffDaysInclusiveLocal(startStr, endStr){
-    const s = new Date(startStr+'T00:00:00'), e = new Date(endStr+'T00:00:00');
+    const s = parseIsoUTC(startStr), e = parseIsoUTC(endStr);
     return Math.round((e-s)/86400000)+1;
   }
 
@@ -1282,7 +1299,7 @@
     }
     const today = todayStr();
     const rowsHtml = rows.map(m=>{
-      const daysUntilFree = Math.max(0, Math.round((new Date(m.nextAvailable+'T00:00:00') - new Date(today+'T00:00:00')) / 86400000));
+      const daysUntilFree = Math.max(0, Math.round((parseIsoUTC(m.nextAvailable) - parseIsoUTC(today)) / 86400000));
       const availLabel = daysUntilFree<=0 ? 'Available now' : `Available in ${daysUntilFree} day${daysUntilFree===1?'':'s'}`;
       return `
         <div class="capacity-row">
@@ -1312,7 +1329,7 @@
     const blob = new Blob([JSON.stringify(state, null, 2)], {type:'application/json'});
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
-    a.href = url; a.download = `nexus-snapshot-${todayStr()}.json`; a.click();
+    a.href = url; a.download = `click-snapshot-${todayStr()}.json`; a.click();
     URL.revokeObjectURL(url);
   }
 
