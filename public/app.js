@@ -185,6 +185,8 @@
     session = null;
     if(pollTimer) clearInterval(pollTimer);
     clearUndo();
+    capacityLoaded = false;
+    capacityData = [];
     document.getElementById('appShell').style.display = 'none';
     document.getElementById('authOverlay').classList.add('open');
     document.getElementById('ownerPwInput').value='';
@@ -1430,15 +1432,22 @@
     }
   }
 
+  let capacityLoaded = false;
   async function loadAndRenderCapacity(){
     const el = document.getElementById('capacityView');
-    el.innerHTML = '<div class="notif-empty">Loading…</div>';
+    // Only show the loading placeholder the first time — this gets called
+    // again every ~8s by the regular poll while this tab is open, and
+    // wiping the whole panel back to "Loading…" each time (even though
+    // nothing changed) was the visible flicker/glitch here. Subsequent
+    // refreshes now update the list quietly in place.
+    if(!capacityLoaded) el.innerHTML = '<div class="notif-empty">Loading…</div>';
     try{
       const data = await api('GET', '/api/capacity');
       capacityData = data.capacity || [];
+      capacityLoaded = true;
       renderCapacityList();
     }catch(e){
-      el.innerHTML = `<div class="notif-empty">${escapeHtml(e.message)}</div>`;
+      if(!capacityLoaded) el.innerHTML = `<div class="notif-empty">${escapeHtml(e.message)}</div>`;
     }
   }
 
