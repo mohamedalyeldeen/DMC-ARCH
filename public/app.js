@@ -17,10 +17,25 @@
   let modalOpenFlag = false;
   let pollTimer = null;
 
+  // Undo: an in-memory stack of {label, restore} for this browser tab only.
+  // See pushUndo()/renderUndoButton() below for the one real limitation.
+  const UNDO_LIMIT = 20;
+  let undoStack = [];
+
+  // Gantt view state
+  let ganttGroupBy = 'engineer'; // 'engineer' | 'team'
+  let ganttZoom = 'week';        // 'day' | 'week' | 'month'
+  const GANTT_DAY_WIDTH = {day:36, week:14, month:5};
+
   function todayStr(){ return new Date().toISOString().slice(0,10); }
   function fmtDate(iso){ if(!iso) return '—'; const d=new Date(iso+'T00:00:00'); return d.toLocaleDateString('en-US',{month:'short',day:'numeric'}); }
   function escapeHtml(str){ const d=document.createElement('div'); d.textContent = str==null?'':String(str); return d.innerHTML; }
   function initials(name){ return (name||'').trim().split(/\s+/).map(w=>w[0]).slice(0,2).join('').toUpperCase(); }
+
+  // ---------- WEEKEND POLICY (Friday & Saturday are non-working days) ----------
+  function isWeekendIso(iso){ if(!iso) return false; const dow = new Date(iso+'T00:00:00').getDay(); return dow===5 || dow===6; }
+  function addDaysIso(iso, days){ const d=new Date(iso+'T00:00:00'); d.setDate(d.getDate()+days); return d.toISOString().slice(0,10); }
+  function daysBetweenIso(a,b){ return Math.round((new Date(b+'T00:00:00') - new Date(a+'T00:00:00'))/86400000); }
 
   // ---------- API HELPER ----------
   async function api(method, url, body){
@@ -33,6 +48,45 @@
     if(!res.ok){ throw new Error((data && data.error) || 'Request failed.'); }
     return data;
   }
+
+  // ---------- UNDO ----------
+  // Scoped to task-board actions only (create/edit/delete/move/duplicate) —
+  // that's where a slip costs the most. Each entry is a {label, restore}
+  // pair; restore() calls the same REST endpoints a person would use to
+  // manually fix their own mistake.
+  //
+  // The one real limitation: this stack lives only in memory, in this
+  // browser tab, for this login session. Reload the page, log out, or close
+  // the tab and it's gone — there's no server-side undo history. It's also
+  // a best-effort replay against whatever the board looks like *right now*,
+  // so if someone else edited the same task in the meantime, undo can fail
+  // or produce a slightly different result than a perfect time-rewind would.
+  // The tooltip on the button says as much.
+  function pushUndo(label, restoreFn){
+    undoStack.push({label, restore: restoreFn});
+    if(undoStack.length > UNDO_LIMIT) undoStack.shift();
+    renderUndoButton();
+  }
+  function clearUndo(){ undoStack = []; renderUndoButton(); }
+  function renderUndoButton(){
+    const btn = document.getElementById('undoBtn');
+    if(!btn) return;
+    if(undoStack.length===0){ btn.style.display='none'; return; }
+    const top = undoStack[undoStack.length-1];
+    btn.style.display = 'inline-block';
+    btn.textContent = '↺ Undo: ' + top.label;
+  }
+  document.getElementById('undoBtn').addEventListener('click', async ()=>{
+    if(undoStack.length===0) return;
+    const action = undoStack.pop();
+    renderUndoButton();
+    try{
+      await action.restore();
+      await refreshState();
+    }catch(e){
+      alert(`Couldn't undo "${action.label}": ${e.message}\n\nThis usually means the board changed since then (e.g. someone else edited or moved the same task).`);
+    }
+  });
 
   // ---------- BOOT ----------
   async function boot(){
@@ -105,6 +159,7 @@
     document.getElementById('authOverlay').classList.remove('open');
     document.getElementById('appShell').style.display = 'flex';
     activeTab = 'board';
+    clearUndo();
     await refreshState();
     pollTimer = setInterval(()=>{ if(!modalOpenFlag) refreshState(); }, 8000);
   }
@@ -112,6 +167,7 @@
   document.getElementById('logoutBtn').addEventListener('click', ()=>{
     session = null;
     if(pollTimer) clearInterval(pollTimer);
+    clearUndo();
     document.getElementById('appShell').style.display = 'none';
     document.getElementById('authOverlay').classList.add('open');
     document.getElementById('ownerPwInput').value='';
@@ -180,24 +236,27 @@
     renderNotifBadge();
     renderSidebar();
     document.getElementById('tabCapacityBtn').style.display = isLeaderLike() ? 'inline-block' : 'none';
+    document.getElementById('board').style.display='none';
+    document.getElementById('ganttView').style.display='none';
+    document.getElementById('dashboardView').style.display='none';
+    document.getElementById('capacityView').style.display='none';
     if(activeTab==='board'){
       document.getElementById('viewTitle').textContent = isLeaderLike() ? "This Week's Jobs" : 'My Tasks';
       document.getElementById('board').style.display='flex';
-      document.getElementById('dashboardView').style.display='none';
-      document.getElementById('capacityView').style.display='none';
       document.getElementById('newTaskBtn').style.display = canManageTasks() ? 'inline-block' : 'none';
       renderBoard();
+    } else if(activeTab==='gantt'){
+      document.getElementById('viewTitle').textContent = 'Gantt';
+      document.getElementById('ganttView').style.display='flex';
+      document.getElementById('newTaskBtn').style.display='none';
+      renderGantt();
     } else if(activeTab==='dashboard'){
       document.getElementById('viewTitle').textContent = 'Performance Ledger';
-      document.getElementById('board').style.display='none';
       document.getElementById('dashboardView').style.display='block';
-      document.getElementById('capacityView').style.display='none';
       document.getElementById('newTaskBtn').style.display='none';
       renderDashboard();
     } else {
       document.getElementById('viewTitle').textContent = 'Capacity';
-      document.getElementById('board').style.display='none';
-      document.getElementById('dashboardView').style.display='none';
       document.getElementById('capacityView').style.display='block';
       document.getElementById('newTaskBtn').style.display='none';
       loadAndRenderCapacity();
@@ -287,27 +346,16 @@
     catch(e){ alert(e.message); }
   });
 
-  document.getElementById('tabBoardBtn').addEventListener('click', ()=>{
-    activeTab='board';
-    document.getElementById('tabBoardBtn').classList.add('active');
-    document.getElementById('tabDashBtn').classList.remove('active');
-    document.getElementById('tabCapacityBtn').classList.remove('active');
+  const ALL_TAB_BTNS = ['tabBoardBtn','tabGanttBtn','tabDashBtn','tabCapacityBtn'];
+  function activateTab(name, btnId){
+    activeTab = name;
+    ALL_TAB_BTNS.forEach(id=> document.getElementById(id).classList.toggle('active', id===btnId));
     renderApp();
-  });
-  document.getElementById('tabDashBtn').addEventListener('click', ()=>{
-    activeTab='dashboard';
-    document.getElementById('tabDashBtn').classList.add('active');
-    document.getElementById('tabBoardBtn').classList.remove('active');
-    document.getElementById('tabCapacityBtn').classList.remove('active');
-    renderApp();
-  });
-  document.getElementById('tabCapacityBtn').addEventListener('click', ()=>{
-    activeTab='capacity';
-    document.getElementById('tabCapacityBtn').classList.add('active');
-    document.getElementById('tabBoardBtn').classList.remove('active');
-    document.getElementById('tabDashBtn').classList.remove('active');
-    renderApp();
-  });
+  }
+  document.getElementById('tabBoardBtn').addEventListener('click', ()=> activateTab('board','tabBoardBtn'));
+  document.getElementById('tabGanttBtn').addEventListener('click', ()=> activateTab('gantt','tabGanttBtn'));
+  document.getElementById('tabDashBtn').addEventListener('click', ()=> activateTab('dashboard','tabDashBtn'));
+  document.getElementById('tabCapacityBtn').addEventListener('click', ()=> activateTab('capacity','tabCapacityBtn'));
 
   function renderStats(){
     const visible = isLeaderLike() ? state.tasks : state.tasks;
@@ -615,13 +663,49 @@
   function nextActionLabel(colIdx){ return (['Start ▸','Submit ▸','Approve ▸'])[colIdx] || 'Next ▸'; }
 
   async function moveTask(id, newStatus){
+    const t = state.tasks.find(x=>x.id===id);
+    const prevStatus = t ? t.status : null;
+    const title = t ? t.title : 'task';
     try{
       await api('POST', `/api/tasks/${id}/move`, {status:newStatus});
+      if(prevStatus && prevStatus!==newStatus){
+        const colLabel = (COLUMNS.find(c=>c.key===prevStatus)||{}).label || prevStatus;
+        pushUndo(`Moved "${title}" back to ${colLabel}`, async ()=>{
+          await api('POST', `/api/tasks/${id}/move`, {status: prevStatus});
+        });
+      }
       await refreshState();
     }catch(e){ alert(e.message); }
   }
 
   // ---------- TASK MODAL ----------
+  // Friday/Saturday are non-working days: the server is the source of truth
+  // (it rejects these too), but checking here gives immediate feedback
+  // instead of a round-trip error after hitting Save.
+  function checkDateFieldsLive(){
+    const auto = document.getElementById('fAutoSchedule').checked;
+    const startEl = document.getElementById('fStartDate');
+    const endEl = document.getElementById('fEndDate');
+    const errEl = document.getElementById('dateFieldError');
+    startEl.classList.remove('date-invalid');
+    endEl.classList.remove('date-invalid');
+    if(auto){ errEl.classList.remove('show'); return true; }
+    let bad = false;
+    if(isWeekendIso(startEl.value)){ startEl.classList.add('date-invalid'); bad = true; }
+    if(isWeekendIso(endEl.value)){ endEl.classList.add('date-invalid'); bad = true; }
+    errEl.classList.toggle('show', bad);
+    return !bad;
+  }
+  function validateManualDates(){
+    const auto = document.getElementById('fAutoSchedule').checked;
+    if(auto) return true;
+    const ok = checkDateFieldsLive();
+    if(!ok){ document.getElementById('dateFieldError').classList.add('show'); }
+    return ok;
+  }
+  document.getElementById('fStartDate').addEventListener('change', checkDateFieldsLive);
+  document.getElementById('fEndDate').addEventListener('change', checkDateFieldsLive);
+
   function toggleAutoScheduleFields(){
     const auto = document.getElementById('fAutoSchedule').checked;
     document.getElementById('manualDatesFields').style.display = auto ? 'none' : 'block';
@@ -696,10 +780,16 @@
       if(assignees.length===0){ alert('Select at least one engineer.'); return; }
     }
     try{
-      await api('POST', `/api/tasks/${taskId}/duplicate`, {
+      const created = await api('POST', `/api/tasks/${taskId}/duplicate`, {
         assignees,
         allowOverlap: document.getElementById('dupAllowOverlap').checked
       });
+      if(Array.isArray(created) && created.length){
+        const label = created.length===1 ? `Duplicated "${created[0].title}"` : `Duplicated to ${created.length} tasks`;
+        pushUndo(label, async ()=>{
+          for(const t of created) await api('DELETE', '/api/tasks/'+t.id);
+        });
+      }
       closeDuplicateModal();
       await refreshState();
     }catch(e){ alert(e.message); }
@@ -740,6 +830,9 @@
       populateInsertAfterOptions(document.getElementById('fAssignee').value);
     }
     toggleAutoScheduleFields();
+    document.getElementById('dateFieldError').classList.remove('show');
+    document.getElementById('fStartDate').classList.remove('date-invalid');
+    document.getElementById('fEndDate').classList.remove('date-invalid');
     document.getElementById('modalOverlay').classList.add('open');
   }
   function closeTaskModal(){ document.getElementById('modalOverlay').classList.remove('open'); modalOpenFlag=false; }
@@ -757,28 +850,41 @@
     const assignee = document.getElementById('fAssignee').value || '';
     const priority = document.getElementById('fPriority').value;
     const isAuto = document.getElementById('fAutoSchedule').checked && !id;
+    if(!validateManualDates()) return;
     try{
       if(id){
+        const prevTask = state.tasks.find(x=>x.id===id);
+        const beforeSnapshot = prevTask ? {
+          title: prevTask.title, description: prevTask.description, assignee: prevTask.assignee,
+          priority: prevTask.priority, startDate: prevTask.startDate, endDate: prevTask.endDate
+        } : null;
         await api('PUT', '/api/tasks/'+id, {
           title, description, assignee, priority,
           startDate: document.getElementById('fStartDate').value || '',
           endDate: document.getElementById('fEndDate').value || '',
           allowOverlap: document.getElementById('fAllowOverlap').checked
         });
+        if(beforeSnapshot){
+          pushUndo(`Edited "${beforeSnapshot.title}"`, async ()=>{
+            await api('PUT', '/api/tasks/'+id, Object.assign({}, beforeSnapshot, {allowOverlap:true}));
+          });
+        }
       } else if(isAuto){
-        await api('POST', '/api/tasks', {
+        const created = await api('POST', '/api/tasks', {
           title, description, assignee, priority,
           mode: 'auto',
           durationDays: parseInt(document.getElementById('fDuration').value,10) || 1,
           insertAfterTaskId: document.getElementById('fInsertAfter').value || null
         });
+        pushUndo(`Created "${created.title}"`, async ()=>{ await api('DELETE', '/api/tasks/'+created.id); });
       } else {
-        await api('POST', '/api/tasks', {
+        const created = await api('POST', '/api/tasks', {
           title, description, assignee, priority,
           startDate: document.getElementById('fStartDate').value || '',
           endDate: document.getElementById('fEndDate').value || '',
           allowOverlap: document.getElementById('fAllowOverlap').checked
         });
+        pushUndo(`Created "${created.title}"`, async ()=>{ await api('DELETE', '/api/tasks/'+created.id); });
       }
       closeTaskModal();
       await refreshState();
@@ -787,15 +893,229 @@
   document.getElementById('deleteTaskBtn').addEventListener('click', async ()=>{
     if(!canManageTasks()) return;
     const id = document.getElementById('taskId').value;
-    if(!id || !confirm('Delete this task? This cannot be undone.')) return;
+    if(!id || !confirm('Delete this task?')) return;
+    const snapshot = state.tasks.find(x=>x.id===id);
     try{
       await api('DELETE', '/api/tasks/'+id);
+      if(snapshot){
+        const snap = JSON.parse(JSON.stringify(snapshot));
+        pushUndo(`Deleted "${snap.title}"`, async ()=>{
+          await api('POST', '/api/tasks/restore', {snapshot: snap});
+        });
+      }
       closeTaskModal();
       await refreshState();
     }catch(e){ alert(e.message); }
   });
 
   document.getElementById('searchBox').addEventListener('input', renderBoard);
+
+  // ---------- GANTT ----------
+  // Reuses the same task/member/team data as the board and the same
+  // member/team sidebar filter — no separate backend endpoint needed.
+  function ganttVisibleMembers(){
+    let members = state.members;
+    if(!isLeaderLike()) return members.filter(m=>m.id===session.id);
+    if(filter){
+      if(filter.type==='team') members = members.filter(m=>m.teamId===filter.id);
+      else if(filter.type==='member') members = members.filter(m=>m.id===filter.id);
+    }
+    return members;
+  }
+
+  function ganttDateRange(tasks){
+    if(tasks.length===0){
+      const start = todayStr();
+      return {start, end: addDaysIso(start, 27)};
+    }
+    let min = tasks[0].startDate, max = tasks[0].endDate;
+    tasks.forEach(t=>{ if(t.startDate<min) min=t.startDate; if(t.endDate>max) max=t.endDate; });
+    return {start: addDaysIso(min,-3), end: addDaysIso(max,3)};
+  }
+
+  function renderGanttHeader(range, dayWidth){
+    let html = '';
+    const rangeEndExclusive = addDaysIso(range.end,1);
+    if(ganttZoom==='month'){
+      let cursor = range.start;
+      while(cursor < rangeEndExclusive){
+        const d = new Date(cursor+'T00:00:00');
+        const monthLabel = d.toLocaleDateString('en-US',{month:'short',year:'numeric'});
+        const firstOfNextMonth = new Date(d.getFullYear(), d.getMonth()+1, 1).toISOString().slice(0,10);
+        const segEnd = firstOfNextMonth < rangeEndExclusive ? firstOfNextMonth : rangeEndExclusive;
+        const segDays = daysBetweenIso(cursor, segEnd);
+        html += `<div class="gantt-head-cell" style="width:${segDays*dayWidth}px;">${monthLabel}</div>`;
+        cursor = segEnd;
+      }
+    } else if(ganttZoom==='week'){
+      let cursor = range.start;
+      while(cursor < rangeEndExclusive){
+        let segEnd = addDaysIso(cursor,7);
+        if(segEnd > rangeEndExclusive) segEnd = rangeEndExclusive;
+        const segDays = daysBetweenIso(cursor, segEnd);
+        html += `<div class="gantt-head-cell" style="width:${segDays*dayWidth}px;">${fmtDate(cursor)}</div>`;
+        cursor = segEnd;
+      }
+    } else {
+      let cursor = range.start;
+      while(cursor < rangeEndExclusive){
+        const weekend = isWeekendIso(cursor);
+        const d = new Date(cursor+'T00:00:00');
+        html += `<div class="gantt-head-cell gantt-day-cell ${weekend?'gantt-weekend':''}" style="width:${dayWidth}px;" title="${cursor}">${d.getDate()}</div>`;
+        cursor = addDaysIso(cursor,1);
+      }
+    }
+    return html;
+  }
+
+  function renderGanttBar(t, range, dayWidth){
+    const left = daysBetweenIso(range.start, t.startDate) * dayWidth;
+    const width = Math.max(dayWidth - 4, (daysBetweenIso(t.startDate, t.endDate)+1) * dayWidth - 4);
+    const overdue = t.endDate < todayStr() && t.status!=='done';
+    const label = `${t.title} (${fmtDate(t.startDate)}–${fmtDate(t.endDate)})`;
+    return `<div class="gantt-bar status-${t.status} ${overdue?'overdue':''}" draggable="true" data-task-id="${t.id}" data-start="${t.startDate}" data-end="${t.endDate}" style="left:${left}px;width:${width}px;" title="${escapeHtml(label)}">${escapeHtml(t.title)}</div>`;
+  }
+
+  function renderGantt(){
+    const el = document.getElementById('ganttView');
+    const dayWidth = GANTT_DAY_WIDTH[ganttZoom];
+    const allVisible = visibleTasks();
+    const tasks = allVisible.filter(t=>t.startDate && t.endDate);
+    const unscheduledCount = allVisible.length - tasks.length;
+    const range = ganttDateRange(tasks);
+    const totalDays = daysBetweenIso(range.start, range.end) + 1;
+    const totalWidth = totalDays * dayWidth;
+    const members = ganttVisibleMembers();
+
+    let rowMeta = [];
+    if(ganttGroupBy==='team'){
+      const teams = (filter && filter.type==='team') ? state.teams.filter(t=>t.id===filter.id) : state.teams;
+      teams.forEach(team=>{
+        const teamMembers = members.filter(m=>m.teamId===team.id);
+        if(teamMembers.length===0) return;
+        rowMeta.push({type:'team', team});
+        teamMembers.forEach(m=> rowMeta.push({type:'member', member:m}));
+      });
+    } else {
+      members.forEach(m=> rowMeta.push({type:'member', member:m}));
+    }
+
+    const labelsHtml = rowMeta.map(row=>{
+      if(row.type==='team') return `<div class="gantt-team-label">${escapeHtml(row.team.name)}</div>`;
+      const m = row.member;
+      return `<div class="gantt-row-label"><div class="avatar" style="width:20px;height:20px;font-size:9px;background:${m.color};">${initials(m.name)}</div>${escapeHtml(m.name)}</div>`;
+    }).join('');
+
+    let stripesHtml = '';
+    let cursor = range.start;
+    for(let i=0;i<totalDays;i++){
+      if(isWeekendIso(cursor)) stripesHtml += `<div class="gantt-weekend-stripe" style="left:${i*dayWidth}px;width:${dayWidth}px;top:44px;bottom:0;"></div>`;
+      cursor = addDaysIso(cursor,1);
+    }
+    const today = todayStr();
+    const todayHtml = (today>=range.start && today<=range.end)
+      ? `<div class="gantt-today-line" style="left:${daysBetweenIso(range.start,today)*dayWidth}px;"></div>` : '';
+
+    const headerHtml = renderGanttHeader(range, dayWidth);
+
+    const tracksHtml = rowMeta.map(row=>{
+      if(row.type==='team') return `<div class="gantt-team-row"></div>`;
+      const m = row.member;
+      const bars = tasks.filter(t=>t.assignee===m.id).map(t=>renderGanttBar(t, range, dayWidth)).join('');
+      return `<div class="gantt-row-track" data-member-id="${m.id}">${bars}</div>`;
+    }).join('');
+
+    el.innerHTML = `
+      <div class="gantt-toolbar">
+        <div class="gantt-toggle-group">
+          <button class="gantt-toggle-btn ${ganttGroupBy==='engineer'?'active':''}" id="ganttByEngineerBtn">By engineer</button>
+          <button class="gantt-toggle-btn ${ganttGroupBy==='team'?'active':''}" id="ganttByTeamBtn">By team</button>
+        </div>
+        <div class="gantt-toggle-group">
+          <button class="gantt-toggle-btn ${ganttZoom==='day'?'active':''}" id="ganttZoomDayBtn">Day</button>
+          <button class="gantt-toggle-btn ${ganttZoom==='week'?'active':''}" id="ganttZoomWeekBtn">Week</button>
+          <button class="gantt-toggle-btn ${ganttZoom==='month'?'active':''}" id="ganttZoomMonthBtn">Month</button>
+        </div>
+        <div class="gantt-legend">
+          <span><span class="gantt-legend-dot" style="background:#B9C2CE;"></span>To do</span>
+          <span><span class="gantt-legend-dot" style="background:var(--amber);"></span>In progress</span>
+          <span><span class="gantt-legend-dot" style="background:var(--teal);"></span>Submitted</span>
+          <span><span class="gantt-legend-dot" style="background:#8FB588;"></span>Done</span>
+          <span><span class="gantt-legend-dot overdue-dot"></span>Overdue</span>
+        </div>
+      </div>
+      ${unscheduledCount>0 ? `<div class="gantt-note">${unscheduledCount} task${unscheduledCount===1?'':'s'} without a start/end date aren't shown here — set dates on them to see them on the timeline.</div>` : ''}
+      <div class="gantt-body">
+        <div class="gantt-labels">
+          <div class="gantt-label-header">${ganttGroupBy==='team'?'Team / Engineer':'Engineer'}</div>
+          ${labelsHtml}
+        </div>
+        <div class="gantt-timeline-scroll" id="ganttScroll">
+          <div class="gantt-grid" style="width:${totalWidth}px;">
+            <div class="gantt-header-row">${headerHtml}</div>
+            ${stripesHtml}
+            ${todayHtml}
+            ${tracksHtml}
+          </div>
+        </div>
+      </div>
+    `;
+
+    if(rowMeta.length===0){
+      el.querySelector('.gantt-body').innerHTML = '<div class="gantt-empty">No one to show on the timeline yet.</div>';
+    }
+
+    document.getElementById('ganttByEngineerBtn').addEventListener('click', ()=>{ ganttGroupBy='engineer'; renderGantt(); });
+    document.getElementById('ganttByTeamBtn').addEventListener('click', ()=>{ ganttGroupBy='team'; renderGantt(); });
+    document.getElementById('ganttZoomDayBtn').addEventListener('click', ()=>{ ganttZoom='day'; renderGantt(); });
+    document.getElementById('ganttZoomWeekBtn').addEventListener('click', ()=>{ ganttZoom='week'; renderGantt(); });
+    document.getElementById('ganttZoomMonthBtn').addEventListener('click', ()=>{ ganttZoom='month'; renderGantt(); });
+
+    const scrollEl = document.getElementById('ganttScroll');
+    const labelsEl = el.querySelector('.gantt-labels');
+    if(scrollEl && labelsEl){
+      scrollEl.addEventListener('scroll', ()=>{ labelsEl.scrollTop = scrollEl.scrollTop; });
+    }
+
+    wireGanttDragScaffold();
+    renderGanttDependencyLines();
+  }
+
+  // Dependencies aren't modeled yet (no `dependsOn` field on tasks), so this
+  // is a deliberate no-op today. When that field exists, draw connector
+  // lines here between a task's bar and the bars of the tasks it depends on
+  // — the DOM already gives each bar a stable `data-task-id` and inline
+  // left/width/top to compute endpoints from.
+  function renderGanttDependencyLines(){ /* future work — see comment above */ }
+
+  // Drag-and-drop-ready scaffold: bars are draggable and rows are drop
+  // targets already, but a drop only computes and logs the target date
+  // rather than actually rescheduling — real rescheduling should reuse the
+  // task modal's PUT /api/tasks/:id call (with its overlap + weekend
+  // checks) instead of writing a second code path here.
+  function wireGanttDragScaffold(){
+    document.querySelectorAll('.gantt-bar').forEach(bar=>{
+      bar.addEventListener('dragstart', (e)=>{
+        bar.classList.add('drag-ghost');
+        e.dataTransfer.setData('text/plain', bar.dataset.taskId);
+      });
+      bar.addEventListener('dragend', ()=> bar.classList.remove('drag-ghost'));
+    });
+    document.querySelectorAll('.gantt-row-track').forEach(track=>{
+      track.addEventListener('dragover', (e)=>{ e.preventDefault(); track.classList.add('drop-target'); });
+      track.addEventListener('dragleave', ()=> track.classList.remove('drop-target'));
+      track.addEventListener('drop', (e)=>{
+        e.preventDefault();
+        track.classList.remove('drop-target');
+        const id = e.dataTransfer.getData('text/plain');
+        if(!id) return;
+        const dayWidth = GANTT_DAY_WIDTH[ganttZoom];
+        const rect = track.getBoundingClientRect();
+        const dropDayOffset = Math.round((e.clientX - rect.left) / dayWidth);
+        console.log(`[Gantt drag scaffold] task ${id} dropped ~${dropDayOffset} day(s) into this row — hook this up to PUT /api/tasks/${id} to actually reschedule it.`);
+      });
+    });
+  }
 
   // ---------- DASHBOARD ----------
   function memberStats(memberId, pool){

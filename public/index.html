@@ -51,6 +51,7 @@
     <div class="topbar">
       <div class="tabs">
         <button class="tab-btn active" id="tabBoardBtn">Board</button>
+        <button class="tab-btn" id="tabGanttBtn">Gantt</button>
         <button class="tab-btn" id="tabDashBtn">Dashboard</button>
         <button class="tab-btn" id="tabCapacityBtn" style="display:none;">Capacity</button>
       </div>
@@ -61,6 +62,7 @@
       <div class="user-strip">
         <button class="mini-btn" id="notifBtn" style="position:relative;">🔔<span id="notifBadge" style="display:none;position:absolute;top:-6px;right:-6px;background:var(--rust);color:#fff;border-radius:10px;padding:1px 5px;font-size:9px;font-family:'IBM Plex Mono',monospace;"></span></button>
         <span class="role-badge" id="roleBadge"></span>
+        <button class="mini-btn" id="undoBtn" style="display:none;" title="Undo only covers actions you've taken this session, on this device — it won't survive a page reload and can't undo changes someone else made in the meantime."></button>
         <button class="mini-btn" id="ownerNameBtn" style="display:none;">Name</button>
         <button class="mini-btn" id="changePwBtn">Password</button>
         <button class="mini-btn primary" id="saveCloseBtn">Save &amp; close</button>
@@ -68,6 +70,7 @@
       </div>
     </div>
     <div class="board" id="board"></div>
+    <div class="gantt-wrap" id="ganttView" style="display:none;"></div>
     <div class="dash-wrap" id="dashboardView" style="display:none;"></div>
     <div class="dash-wrap" id="capacityView" style="display:none;"></div>
   </main>
@@ -98,13 +101,16 @@
           <div class="field"><label>Start date</label><input type="date" id="fStartDate"></div>
           <div class="field"><label>End date</label><input type="date" id="fEndDate"></div>
         </div>
+        <div class="weekend-hint">Friday and Saturday are non-working days — start and end dates can't fall on either.</div>
+        <div class="field-error" id="dateFieldError">Friday and Saturday are non-working days — pick a different start or end date.</div>
         <div class="field field-check"><input type="checkbox" id="fAllowOverlap"><label style="margin:0;text-transform:none;font-size:13px;">Allow Task Overlap</label></div>
       </div>
       <div id="autoScheduleFields" style="display:none;">
         <div class="field-row">
-          <div class="field"><label>Duration (days)</label><input type="number" id="fDuration" min="1" value="1"></div>
+          <div class="field"><label>Duration (working days)</label><input type="number" id="fDuration" min="1" value="1"></div>
           <div class="field"><label>Insert</label><select id="fInsertAfter"><option value="">At the beginning of their queue</option></select></div>
         </div>
+        <div class="weekend-hint">Fridays and Saturdays don't count toward the duration, and dates are never placed on one.</div>
       </div>
       <div class="modal-actions">
         <button type="button" class="btn-text" id="deleteTaskBtn" style="display:none;">Delete task</button>
