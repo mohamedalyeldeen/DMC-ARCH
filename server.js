@@ -30,17 +30,28 @@ function canLeadAssignTo(user, assigneeId, membersCache) {
 }
 
 function sendErr(res, e) {
-  const map = { NOT_FOUND: 404, FORBIDDEN: 403, USERNAME_TAKEN: 409, BAD_REQUEST: 400, OVERLAP: 409 };
+  const map = { NOT_FOUND: 404, FORBIDDEN: 403, USERNAME_TAKEN: 409, BAD_REQUEST: 400, OVERLAP: 409, WEEKEND_DATE: 400 };
   const status = map[e.message] || 500;
   const messages = {
     NOT_FOUND: 'That record no longer exists.',
     FORBIDDEN: "You don't have permission to do that.",
     USERNAME_TAKEN: 'That username is already taken.',
     BAD_REQUEST: 'Missing or invalid data.',
-    OVERLAP: 'This overlaps with another task already scheduled for this person. Check "Allow Task Overlap" to schedule it anyway.'
+    OVERLAP: 'This overlaps with another task already scheduled for this person. Check "Allow Task Overlap" to schedule it anyway.',
+    WEEKEND_DATE: 'Friday and Saturday are non-working days — tasks can\'t start or end on one of those.'
   };
   console.error(e);
   res.status(status).json({ error: messages[e.message] || 'Something went wrong.' });
+}
+
+// Friday/Saturday are non-working days: nobody gets assigned a task that
+// starts or ends on one of them. Only checked against manually-picked dates
+// — auto-scheduled dates are computed by lib/scheduler.js and always land
+// on a working day by construction.
+function assertWorkingDates(...dates) {
+  dates.filter(Boolean).forEach(d => {
+    if (scheduler.isNonWorkingDay(d)) throw new Error('WEEKEND_DATE');
+  });
 }
 
 async function notifyAssignment(task, actor) {
@@ -339,6 +350,7 @@ app.post('/api/tasks', requireAuth, requireLeader, async (req, res) => {
         } else if (bodyStart) {
           startDate = bodyStart;
           endDate = bodyEnd || bodyStart;
+          assertWorkingDates(startDate, endDate);
           if (!allowOverlap && scheduler.detectOverlap(rows, assignee, startDate, endDate)) {
             throw new Error('OVERLAP');
           }
@@ -395,6 +407,7 @@ app.put('/api/tasks/:id', requireAuth, requireLeader, async (req, res) => {
       }
 
       if (newAssignee && newStart) {
+        assertWorkingDates(newStart, newEnd);
         if (!allowOverlap && scheduler.detectOverlap(rows, newAssignee, newStart, newEnd, t.id)) {
           throw new Error('OVERLAP');
         }
@@ -449,6 +462,43 @@ app.delete('/api/tasks/:id', requireAuth, requireLeader, async (req, res) => {
       return remaining;
     });
     res.json({ ok: true });
+  } catch (e) { sendErr(res, e); }
+});
+
+// Used by the client-side Undo stack to reverse a delete: re-inserts the
+// exact task snapshot the client had cached (same id, dates, sequence,
+// status, history) and re-opens the gap in that engineer's queue the same
+// way removeAndCompact closed it. This only lines up cleanly if nothing else
+// touched that engineer's queue between the delete and the undo — see the
+// Undo section in the README for that caveat.
+app.post('/api/tasks/restore', requireAuth, requireLeader, async (req, res) => {
+  try {
+    const snapshot = req.body.snapshot;
+    if (!snapshot || !snapshot.id || !snapshot.title) throw new Error('BAD_REQUEST');
+    let membersCache = null;
+    if (req.user.role !== 'owner') membersCache = await readTab('Members');
+    let restored;
+    await updateTab('Tasks', rows => {
+      if (rows.find(r => r.id === snapshot.id)) throw new Error('BAD_REQUEST');
+      if (req.user.role !== 'owner' && snapshot.assignee && !canLeadAssignTo(req.user, snapshot.assignee, membersCache)) {
+        throw new Error('FORBIDDEN');
+      }
+      const restoredTask = {
+        id: snapshot.id, title: snapshot.title, description: snapshot.description || '',
+        assignee: snapshot.assignee || '', priority: snapshot.priority || 'M', due: snapshot.due || '',
+        status: snapshot.status || 'todo', completedAt: snapshot.completedAt || '',
+        startDate: snapshot.startDate || '', endDate: snapshot.endDate || '',
+        sequence: snapshot.sequence || 0, history: snapshot.history || [], createdAt: snapshot.createdAt || today()
+      };
+      if (restoredTask.assignee) {
+        scheduler.restoreRemovedTask(rows, restoredTask.assignee, restoredTask);
+      } else {
+        rows.push(restoredTask);
+      }
+      restored = restoredTask;
+      return rows;
+    });
+    res.json(restored);
   } catch (e) { sendErr(res, e); }
 });
 

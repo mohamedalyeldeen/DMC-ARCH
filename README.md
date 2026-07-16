@@ -244,3 +244,88 @@ completion date). Team leaders and the owner get all three filters; regular
 members just see their own numbers with a date range filter.
 
 No new environment variables or manual Sheet setup needed for any of this.
+
+## Phase 5: Undo, Gantt view, and a Friday/Saturday work week
+
+### Undo (board actions only)
+
+There's now an **Undo** button in the top bar next to your role badge. It
+covers the actions where a mistake is most costly: creating, editing,
+deleting, moving, and duplicating tasks. It only appears once you've done
+something undoable, and it always shows what it's about to undo, e.g.
+"↺ Undo: Deleted 'Fix login bug'".
+
+**How it works:** every time you take one of those actions, the browser
+tab remembers how to reverse it (up to the last 20 actions) and forgets the
+oldest one once that's full. Clicking Undo replays the reverse of your most
+recent action — deleting a task you just created, putting a deleted task
+back exactly where it was (including its place in that person's schedule),
+reverting an edit, moving a card back, or removing a duplicate.
+
+**The one real limitation:** this history lives only in your browser tab,
+for your current login. Reload the page, log out, or close the tab and it's
+gone — there's no server-side undo log. It's also a best-effort replay
+against whatever the board looks like *right now*, so if someone else edited
+or moved the same task in the meantime, Undo can fail (you'll get a clear
+error) or land slightly differently than a perfect rewind would. For
+anything higher-stakes than that, Google Sheets' own version history (see
+**Backups & recovery** above) is still the durable safety net.
+
+### Gantt view
+
+A new **Gantt** tab sits next to Board on the top bar, for anyone logged in
+— it reuses the exact same task/team/member data as the board, so there's
+nothing new to configure.
+
+- **Group by engineer or by team** — toggle at the top of the view. "By
+  team" adds a header row per team above that team's engineers.
+- **Zoom: Day / Week / Month** — changes both the timeline's granularity
+  and how much of it fits on screen at once.
+- **Color by status** — grey (To Do), amber (In Progress), teal
+  (Submitted), green (Done) — matching the board's own column colors.
+- **Overdue tasks** get a red outline regardless of status color.
+- **Weekends are shaded** on the timeline (see the Friday/Saturday section
+  below) and a today-marker line runs down the whole chart.
+- Tasks without a start/end date aren't shown on the timeline (there's
+  nothing to plot) — a small note above the chart tells you how many are
+  hidden for that reason.
+
+Two things are intentionally *not* fully built yet, but the view is
+structured so they're straightforward to add on top:
+
+- **Drag-and-drop rescheduling** — every bar is already `draggable`, and
+  every engineer's row is already a drop target. Right now, dropping a bar
+  just computes a target date and logs it to the browser console instead of
+  actually moving the task (see `wireGanttDragScaffold()` in `app.js`) —
+  hook that computed date into the same task-edit call the task modal uses
+  (so it gets the same overlap and weekend checks) to turn this on for real.
+- **Task dependencies** — there's no `dependsOn` field on tasks yet, so
+  `renderGanttDependencyLines()` in `app.js` is a deliberate no-op today.
+  Once tasks can reference the task(s) they depend on, that function is
+  where connector lines between bars would get drawn.
+
+### Friday/Saturday work week
+
+Click now assumes a **Friday/Saturday weekend** throughout the scheduling
+engine — this matches the region the original deployment (dmc-curve.com)
+operates in. Two concrete effects:
+
+1. **Task durations skip weekends.** A task's "Duration (working days)" in
+   auto-schedule mode no longer counts Fridays or Saturdays — a 5-day task
+   starting Wednesday runs Wed, Thu, (skips Fri/Sat), Sun, Mon, Tue. When one
+   task shifts another (inserting, deleting, or restoring a task in someone's
+   queue), the shift is calculated in working days too, so a shift never
+   re-introduces a Friday or Saturday as another task's start or end date.
+2. **Nobody can be assigned to start or end a task on a Friday or Saturday.**
+   This is enforced on the server (the real source of truth) for manually
+   picked Start/End dates — you'll get a clear error if you try. The task
+   form also checks this immediately as you pick a date, so you don't have
+   to wait for a round-trip to find out. Auto-scheduled dates are computed
+   by the scheduling engine itself and always land on a working day, so
+   there's nothing to check there.
+
+If your team's actual weekend is different (e.g. Saturday/Sunday), the
+working-week rule lives in one place — `isNonWorkingDay()` in
+`lib/scheduler.js` (and its client-side mirror, `isWeekendIso()` in
+`public/app.js`) — change the day-of-week check there and both the
+scheduling math and the Gantt view's weekend shading follow.
