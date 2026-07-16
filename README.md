@@ -221,3 +221,26 @@ no manual setup needed.
 - The owner doesn't get notifications (they already see the whole board), only members and team leaders do.
 
 No new environment variables needed — this uses the same Google Sheets connection as everything else.
+
+## Phase 4: Capacity tab, Estimated vs Actual, and owner name
+
+**Your name instead of "The board owner"** — click the new **"Name"** button
+in the top bar (next to Password) to set your real name. It's used in
+notifications and emails from then on, e.g. "New task assigned by Mohamed
+Abdelrahman" instead of "The board owner." New deployments now also ask for
+this during first-time setup.
+
+**Capacity tab** — a new tab (owner and team leaders only) showing every
+engineer they can see, with: how many open tasks they're carrying, how many
+days of work that adds up to, a capacity % bar (based on a 14-day rolling
+window), and when they're next free. Sortable by availability or by capacity %.
+
+**Estimated vs Actual (in the Dashboard tab)** — compares planned duration
+(Start → End date) against how long a task actually took (from when it was
+moved to "In Progress" to when it was completed), across completed tasks.
+Shows Estimated days, Actual days, the Difference, and a Completion
+Efficiency %. Filterable by Engineer, Team, and a date range (based on
+completion date). Team leaders and the owner get all three filters; regular
+members just see their own numbers with a date range filter.
+
+No new environment variables or manual Sheet setup needed for any of this.

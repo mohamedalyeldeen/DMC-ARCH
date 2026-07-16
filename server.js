@@ -48,7 +48,7 @@ async function notifyAssignment(task, actor) {
     const members = await readTab('Members');
     const member = members.find(m => m.id === task.assignee);
     if (!member || !member.email) return;
-    const assignedBy = actor.role === 'owner' ? 'The board owner' : (actor.name || 'A team leader');
+    const assignedBy = actorLabel(actor);
     const { subject, text, html } = taskAssignedEmail({
       memberName: member.name, taskTitle: task.title, description: task.description,
       priority: task.priority, due: task.due, assignedBy
@@ -75,8 +75,18 @@ async function addNotification(userId, taskId, type, message, actorName) {
   }
 }
 
+app.post('/api/auth/set-owner-name', requireAuth, requireOwner, async (req, res) => {
+  try {
+    const name = (req.body.name || '').trim();
+    if (!name) return res.status(400).json({ error: 'Enter a name.' });
+    await setConfig('ownerName', name);
+    const token = sign({ role: 'owner', name });
+    res.json({ token, role: 'owner', name });
+  } catch (e) { sendErr(res, e); }
+});
+
 function actorLabel(actor) {
-  return actor.role === 'owner' ? 'The board owner' : (actor.name || 'A team leader');
+  return actor.name || (actor.role === 'owner' ? 'The board owner' : 'A team leader');
 }
 
 // ---------- AUTH ----------
@@ -91,10 +101,11 @@ app.post('/api/auth/setup', async (req, res) => {
   try {
     const hash = await getConfig('ownerPasswordHash');
     if (hash) return res.status(400).json({ error: 'Setup was already completed.' });
-    const { password } = req.body;
+    const { password, ownerName } = req.body;
     if (!password || password.length < 3) return res.status(400).json({ error: 'Choose a password with at least 3 characters.' });
     const h = await bcrypt.hash(password, 10);
     await setConfig('ownerPasswordHash', h);
+    await setConfig('ownerName', (ownerName || 'Board Owner').trim());
     const existingTeams = await readTab('Teams');
     if (existingTeams.length === 0) {
       await updateTab('Teams', () => ([
@@ -104,8 +115,9 @@ app.post('/api/auth/setup', async (req, res) => {
         { id: 'team4', name: 'Team Delta', color: '#4C7EA8' }
       ]));
     }
-    const token = sign({ role: 'owner' });
-    res.json({ token, role: 'owner', name: 'You (Owner)' });
+    const finalName = (ownerName || 'Board Owner').trim();
+    const token = sign({ role: 'owner', name: finalName });
+    res.json({ token, role: 'owner', name: finalName });
   } catch (e) { sendErr(res, e); }
 });
 
@@ -115,8 +127,9 @@ app.post('/api/auth/login-owner', async (req, res) => {
     if (!hash) return res.status(400).json({ error: 'Board has not been set up yet.' });
     const ok = await bcrypt.compare(req.body.password || '', hash);
     if (!ok) return res.status(401).json({ error: 'Incorrect owner password.' });
-    const token = sign({ role: 'owner' });
-    res.json({ token, role: 'owner', name: 'You (Owner)' });
+    const ownerName = (await getConfig('ownerName')) || 'Board Owner';
+    const token = sign({ role: 'owner', name: ownerName });
+    res.json({ token, role: 'owner', name: ownerName });
   } catch (e) { sendErr(res, e); }
 });
 
@@ -153,6 +166,22 @@ app.post('/api/auth/change-password', requireAuth, async (req, res) => {
 });
 
 // ---------- STATE ----------
+// Capacity is a planning view for whoever assigns work — owner + team leads.
+app.get('/api/capacity', requireAuth, requireLeader, async (req, res) => {
+  try {
+    const [membersRaw, tasksAll] = await Promise.all([readTab('Members'), readTab('Tasks')]);
+    let visibleMembers = membersRaw;
+    if (req.user.role !== 'owner') {
+      visibleMembers = membersRaw.filter(m => m.reportsTo === req.user.id || m.id === req.user.id);
+    }
+    const capacity = visibleMembers.map(m => {
+      const c = scheduler.engineerCapacity(tasksAll, m.id);
+      return { id: m.id, name: m.name, teamId: m.teamId, ...c };
+    });
+    res.json({ capacity });
+  } catch (e) { sendErr(res, e); }
+});
+
 app.get('/api/state', requireAuth, async (req, res) => {
   try {
     const [teams, membersRaw, tasksAll] = await Promise.all([readTab('Teams'), readTab('Members'), readTab('Tasks')]);
