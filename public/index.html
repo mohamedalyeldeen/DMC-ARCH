@@ -1,12 +1,180 @@
-<!-- أضف هذا الزر في جزء التحكم بلوحة المهام (Task Board Toolbar) -->
-<div class="board-actions-toolbar">
-    <!-- أزرار اللوحة الأخرى هنا... -->
-    
-    <div class="undo-container" style="position: relative; display: inline-block;">
-        <button id="undo-btn" class="btn btn-secondary" disabled onclick="triggerUndo()">
-            ↩️ تراجع (Undo)
-        </button>
-        <!-- أيقونة التنبيه الصريح بالقيد -->
-        <span class="undo-limitation-info" title="تنبيه: التراجع متاح فقط لجلسة العمل الحالية في هذا التبويب. تحديث الصفحة أو وجود تعديلات متزامنة من مستخدمين آخرين قد يعطل هذه الميزة أو يلغي تعديلاتهم.">ℹ️</span>
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Click — Team Task Tracker</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600;9..144,700&family=Inter:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+
+<div id="loadingScreen">LOADING NEXUS…</div>
+
+<div class="modal-overlay" id="authOverlay">
+  <div class="auth-card">
+    <div id="setupPanel" style="display:none;">
+      <h2>Welcome to Click</h2>
+      <div class="sub">First-time setup</div>
+      <div class="field"><label>Your name (shown to your team)</label><input type="text" id="setupOwnerName" placeholder="e.g. Mohamed Abdelrahman"></div>
+      <div class="field"><label>Create an owner password</label><input type="password" id="setupPw1"></div>
+      <div class="field"><label>Confirm password</label><input type="password" id="setupPw2"></div>
+      <button class="full-btn" id="setupBtn">Create owner account</button>
+      <div class="auth-error" id="setupError"></div>
+      <div class="auth-note">You are the board owner. You can add team leaders and members after logging in.</div>
     </div>
+    <div id="loginPanel" style="display:none;">
+      <h2>Click</h2>
+      <div class="sub">Sign in to your board</div>
+      <div class="auth-tabs">
+        <button class="auth-tab-btn active" id="ownerTabBtn">Owner</button>
+        <button class="auth-tab-btn" id="memberTabBtn">Team member</button>
+      </div>
+      <div id="ownerLoginForm">
+        <div class="field"><label>Owner password</label><input type="password" id="ownerPwInput"></div>
+        <button class="full-btn" id="ownerLoginBtn">Log in</button>
+      </div>
+      <div id="memberLoginForm" style="display:none;">
+        <div class="field"><label>Username</label><input type="text" id="memberUserInput" autocomplete="username"></div>
+        <div class="field"><label>Password</label><input type="password" id="memberPwInput" autocomplete="current-password"></div>
+        <button class="full-btn" id="memberLoginBtn">Log in</button>
+      </div>
+      <div class="auth-error" id="loginError"></div>
+    </div>
+  </div>
 </div>
+
+<div class="app" id="appShell" style="display:none;">
+  <aside class="sidebar" id="sidebar"></aside>
+  <main class="board-wrap">
+    <div class="topbar">
+      <div class="tabs">
+        <button class="tab-btn active" id="tabBoardBtn">Board</button>
+        <button class="tab-btn" id="tabDashBtn">Dashboard</button>
+        <button class="tab-btn" id="tabCapacityBtn" style="display:none;">Capacity</button>
+      </div>
+      <h1 id="viewTitle">This Week's Jobs</h1>
+      <input type="text" class="search-box" id="searchBox" placeholder="Search tasks…">
+      <div class="stats" id="statsLine"></div>
+      <button class="primary-btn" id="newTaskBtn" style="display:none;">+ Assign task</button>
+      <div class="user-strip">
+        <button class="mini-btn" id="notifBtn" style="position:relative;">🔔<span id="notifBadge" style="display:none;position:absolute;top:-6px;right:-6px;background:var(--rust);color:#fff;border-radius:10px;padding:1px 5px;font-size:9px;font-family:'IBM Plex Mono',monospace;"></span></button>
+        <span class="role-badge" id="roleBadge"></span>
+        <button class="mini-btn" id="ownerNameBtn" style="display:none;">Name</button>
+        <button class="mini-btn" id="changePwBtn">Password</button>
+        <button class="mini-btn primary" id="saveCloseBtn">Save &amp; close</button>
+        <button class="mini-btn" id="logoutBtn">Log out</button>
+      </div>
+    </div>
+    <div class="board" id="board"></div>
+    <div class="dash-wrap" id="dashboardView" style="display:none;"></div>
+    <div class="dash-wrap" id="capacityView" style="display:none;"></div>
+  </main>
+</div>
+
+<div class="modal-overlay" id="modalOverlay">
+  <div class="modal">
+    <h3 id="modalTitle">Assign a new task</h3>
+    <form id="taskForm">
+      <input type="hidden" id="taskId">
+      <div class="field"><label>Task title</label><input type="text" id="fTitle" required maxlength="80" placeholder="e.g. Draft client proposal"></div>
+      <div class="field"><label>Details</label><textarea id="fDesc" maxlength="400" placeholder="What needs to get done…"></textarea></div>
+      <div class="field-row">
+        <div class="field"><label>Assign to</label><select id="fAssignee"></select></div>
+        <div class="field"><label>Priority</label>
+          <select id="fPriority">
+            <option value="H">High</option>
+            <option value="M" selected>Medium</option>
+            <option value="L">Low</option>
+          </select>
+        </div>
+      </div>
+      <div class="field" id="autoScheduleField">
+        <label class="field-check"><input type="checkbox" id="fAutoSchedule"><span style="margin:0;text-transform:none;font-size:13px;">Auto-schedule into their queue (instead of picking dates)</span></label>
+      </div>
+      <div id="manualDatesFields">
+        <div class="field-row">
+          <div class="field"><label>Start date</label><input type="date" id="fStartDate"></div>
+          <div class="field"><label>End date</label><input type="date" id="fEndDate"></div>
+        </div>
+        <div class="field field-check"><input type="checkbox" id="fAllowOverlap"><label style="margin:0;text-transform:none;font-size:13px;">Allow Task Overlap</label></div>
+      </div>
+      <div id="autoScheduleFields" style="display:none;">
+        <div class="field-row">
+          <div class="field"><label>Duration (days)</label><input type="number" id="fDuration" min="1" value="1"></div>
+          <div class="field"><label>Insert</label><select id="fInsertAfter"><option value="">At the beginning of their queue</option></select></div>
+        </div>
+      </div>
+      <div class="modal-actions">
+        <button type="button" class="btn-text" id="deleteTaskBtn" style="display:none;">Delete task</button>
+        <div style="margin-left:auto;display:flex;gap:10px;">
+          <button type="button" class="btn-cancel" id="cancelModalBtn">Cancel</button>
+          <button type="submit" class="btn-primary" id="saveTaskBtn">Assign task</button>
+        </div>
+      </div>
+    </form>
+  </div>
+</div>
+
+<div class="modal-overlay" id="memberModalOverlay">
+  <div class="modal">
+    <h3 id="memberModalTitle">Add team member</h3>
+    <form id="memberForm">
+      <input type="hidden" id="mmId">
+      <div class="field"><label>Full name</label><input type="text" id="mmName" required maxlength="40"></div>
+      <div class="field-row">
+        <div class="field"><label>Username</label><input type="text" id="mmUsername" required maxlength="24" autocomplete="off"></div>
+        <div class="field"><label>Password</label><input type="text" id="mmPassword" maxlength="40" autocomplete="off" placeholder="Leave blank to keep current"></div>
+      </div>
+      <div class="field"><label>Company email (for task notifications)</label><input type="email" id="mmEmail" maxlength="80" placeholder="name@dmc-curve.com"></div>
+      <div class="field"><label>Team</label><select id="mmTeam"></select></div>
+      <div class="field field-check"><input type="checkbox" id="mmLead"><label style="margin:0;text-transform:none;font-size:13px;">Make this person a team leader (can manage &amp; approve tasks)</label></div>
+      <div class="field" id="reportsToField"><label>Reports to (team leader)</label><select id="mmReportsTo"></select></div>
+      <div class="modal-actions">
+        <button type="button" class="btn-text" id="deleteMemberBtn" style="display:none;">Remove member</button>
+        <div style="margin-left:auto;display:flex;gap:10px;">
+          <button type="button" class="btn-cancel" id="cancelMemberModalBtn">Cancel</button>
+          <button type="submit" class="btn-primary" id="saveMemberBtn">Add member</button>
+        </div>
+      </div>
+    </form>
+  </div>
+</div>
+
+<div class="modal-overlay" id="notificationsOverlay">
+  <div class="modal">
+    <h3>Notifications</h3>
+    <div id="notifList" style="max-height:360px;overflow-y:auto;"></div>
+    <div class="modal-actions">
+      <button type="button" class="btn-text" id="markAllReadBtn">Mark all as read</button>
+      <div style="margin-left:auto;display:flex;gap:10px;">
+        <button type="button" class="btn-cancel" id="closeNotifBtn">Close</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="duplicateModalOverlay">
+  <div class="modal">
+    <h3>Duplicate task</h3>
+    <input type="hidden" id="dupTaskId">
+    <p style="font-size:12.5px;color:var(--text-dim-on-paper);margin-top:-8px;">Copies the title, description, priority, and dates from the original.</p>
+    <div class="field">
+      <label class="field-check" style="margin-bottom:8px;"><input type="radio" name="dupTarget" id="dupSame" checked><span style="margin:0;text-transform:none;font-size:13px;">Same assignee</span></label>
+      <label class="field-check"><input type="radio" name="dupTarget" id="dupSelected"><span style="margin:0;text-transform:none;font-size:13px;">Selected engineers</span></label>
+    </div>
+    <div class="field" id="dupEngineerList" style="display:none;max-height:220px;overflow-y:auto;border:1px solid var(--line-on-paper);border-radius:3px;padding:10px;"></div>
+    <div class="field field-check"><input type="checkbox" id="dupAllowOverlap" checked><label style="margin:0;text-transform:none;font-size:13px;">Allow Task Overlap</label></div>
+    <div class="modal-actions">
+      <div style="margin-left:auto;display:flex;gap:10px;">
+        <button type="button" class="btn-cancel" id="cancelDuplicateBtn">Cancel</button>
+        <button type="button" class="btn-primary" id="confirmDuplicateBtn">Duplicate</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="/app.js"></script>
+</body>
+</html>
