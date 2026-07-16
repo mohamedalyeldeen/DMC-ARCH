@@ -26,7 +26,7 @@ Google interactively.
 
 1. Go to [console.cloud.google.com](https://console.cloud.google.com) and create a new project (or use an existing one).
 2. In the left menu, go to **APIs & Services → Library**, search for **Google Sheets API**, and click **Enable**.
-3. Go to **APIs & Services → Credentials → Create Credentials → Service account**. Give it any name (e.g. "nexus-bot") and click through the defaults.
+3. Go to **APIs & Services → Credentials → Create Credentials → Service account**. Give it any name (e.g. "click-bot") and click through the defaults.
 4. Open the service account you just created → **Keys** tab → **Add Key → Create new key → JSON**. This downloads a `.json` file — keep it private, do not commit it anywhere public.
 5. Open that JSON file. You need two values from it:
    - `client_email` → goes in `GOOGLE_SERVICE_ACCOUNT_EMAIL`
@@ -46,7 +46,7 @@ and data automatically the first time it runs.
 ## 3. Configure the server
 
 ```bash
-cd nexus-server
+cd click-server
 cp .env.example .env
 ```
 
@@ -75,7 +75,7 @@ manager so it restarts automatically and keeps running after you log out, for ex
 
 ```bash
 npm install -g pm2
-pm2 start server.js --name nexus
+pm2 start server.js --name click
 pm2 save
 pm2 startup
 ```
@@ -92,7 +92,7 @@ This project is already set up to deploy on Vercel as-is — no code changes nee
 2. Go to [vercel.com](https://vercel.com) → sign up (no card required) → **Add New Project** → import your GitHub repo.
 3. Vercel will detect `vercel.json` automatically. Leave the build settings as default.
 4. Before deploying, go to **Environment Variables** and add the same four values from your `.env` file: `JWT_SECRET`, `GOOGLE_SERVICE_ACCOUNT_EMAIL`, `GOOGLE_PRIVATE_KEY`, `GOOGLE_SHEET_ID`.
-5. Click **Deploy**. You'll get a free URL like `nexus-yourname.vercel.app`.
+5. Click **Deploy**. You'll get a free URL like `click-yourname.vercel.app`.
 
 **One thing worth knowing:** on Vercel, each request may run in a fresh, separate
 instance of your code. The in-memory "lock" that keeps two people's saves from
@@ -133,7 +133,7 @@ the mailbox below.
    ```
    SMTP_HOST=smtp.office365.com
    SMTP_PORT=587
-   SMTP_USER=nexus-notifications@yourcompany.com
+   SMTP_USER=click-notifications@yourcompany.com
    SMTP_PASS=the-mailbox-password
    SMTP_FROM_NAME=Click
    ```
