@@ -538,3 +538,12 @@ I've built and fully tested the capability but haven't created any specific
 viewer accounts — that needs real names/usernames/passwords, which is
 information only you have. Creating one takes about 30 seconds through
 the **+ Member** flow above.
+
+## Phase 10: A dedicated Viewer tab on the login screen
+
+The sign-in screen now has three tabs instead of two: **Owner**, **Team
+member**, and **Viewer**. Under the hood a viewer account is still just a
+Member with `isViewer` set, so the Viewer tab logs in through the exact
+same endpoint as Team member — it's a separate tab purely so the two
+viewer accounts have an obvious, unambiguous place to sign in instead of
+being lumped under "Team member."
