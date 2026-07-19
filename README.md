@@ -496,15 +496,21 @@ one just means picking fresh categorization for it going forward.
 
 ## Phase 9: Transparent logo, and read-only viewer accounts
 
-### Logo background removed
+### Logo background removed, two text-color variants
 
 `public/dmc-logo.png` had a plain white background baked into the actual
 pixels (not just hidden by CSS) — it was RGBA in name but fully opaque
-everywhere. It's been re-processed with proper alpha matting: the white is
-now genuinely transparent, and the gold roofline/black text keep their real
-colors with clean anti-aliased edges, so the logo blends into any
-background (dark sidebar, light login card, or anything else) instead of
-sitting in a white box.
+everywhere. It's been re-processed with proper alpha matting so the white is
+genuinely transparent.
+
+The logo shows up in two places with very different backgrounds — the dark
+sidebar and the light login/setup card — so it now exists as two files:
+`dmc-logo-white.png` (white "DMC CONTRACTING" text, used on the dark
+sidebar) and `dmc-logo-dark.png` (the original near-black text, used on the
+light login card). White text on the light cream card would have a contrast
+ratio of about 1.1 — essentially invisible — so that variant only appears
+where it actually reads clearly. Both keep the gold roofline unchanged;
+only the letterforms differ between the two files.
 
 ### Read-only viewer accounts
 
