@@ -493,3 +493,42 @@ as a structured location line above the task type. Tasks created before
 this change simply don't have zone/project/building/taskType set; the
 board falls back to showing their original title as before, and editing
 one just means picking fresh categorization for it going forward.
+
+## Phase 9: Transparent logo, and read-only viewer accounts
+
+### Logo background removed
+
+`public/dmc-logo.png` had a plain white background baked into the actual
+pixels (not just hidden by CSS) — it was RGBA in name but fully opaque
+everywhere. It's been re-processed with proper alpha matting: the white is
+now genuinely transparent, and the gold roofline/black text keep their real
+colors with clean anti-aliased edges, so the logo blends into any
+background (dark sidebar, light login card, or anything else) instead of
+sitting in a white box.
+
+### Read-only viewer accounts
+
+A new account type — **Viewer** — for people who need visibility into the
+whole board (e.g. stakeholders, upper management) but should never be able
+to change anything.
+
+- **Create one**: owner → **+ Member** → check **"Viewer account (read-only
+  — sees everything, can't assign, edit, move, or approve anything)"**.
+  Checking it hides the Team/Team-leader/Reports-to fields since none of
+  those apply — a viewer isn't scoped to one team, they see all of them.
+- **What they see**: the entire board across every team, Gantt, Dashboard,
+  and Capacity — the same full visibility as the owner.
+- **What they can't do**: create, edit, delete, move, approve, or duplicate
+  a task, and can't add/edit members. This is enforced server-side (not
+  just hidden in the UI) — every mutating endpoint rejects a viewer with a
+  403, confirmed by direct API testing, not just by the buttons being
+  hidden in the browser.
+- They show up in their own **Viewers** section in the sidebar, separate
+  from the team blocks, since they don't belong to one.
+- No **My Stats** button and no Click Score/achievements — those measure
+  task completion, and a viewer isn't assigned any tasks.
+
+I've built and fully tested the capability but haven't created any specific
+viewer accounts — that needs real names/usernames/passwords, which is
+information only you have. Creating one takes about 30 seconds through
+the **+ Member** flow above.

@@ -243,8 +243,8 @@ app.post('/api/auth/login-member', async (req, res) => {
     if (!m) return res.status(401).json({ error: 'Incorrect username or password.' });
     const ok = await bcrypt.compare(password || '', m.passwordHash);
     if (!ok) return res.status(401).json({ error: 'Incorrect username or password.' });
-    const token = sign({ role: 'member', id: m.id, teamId: m.teamId, isTeamLead: m.isTeamLead, name: m.name });
-    res.json({ token, role: m.isTeamLead ? 'teamlead' : 'member', name: m.name, teamId: m.teamId, isTeamLead: m.isTeamLead, id: m.id });
+    const token = sign({ role: 'member', id: m.id, teamId: m.teamId, isTeamLead: m.isTeamLead, isViewer: m.isViewer, name: m.name });
+    res.json({ token, role: m.isViewer ? 'viewer' : (m.isTeamLead ? 'teamlead' : 'member'), name: m.name, teamId: m.teamId, isTeamLead: m.isTeamLead, isViewer: m.isViewer, id: m.id });
   } catch (e) { sendErr(res, e); }
 });
 
@@ -269,11 +269,12 @@ app.post('/api/auth/change-password', requireAuth, async (req, res) => {
 
 // ---------- STATE ----------
 // Capacity is a planning view for whoever assigns work — owner + team leads.
-app.get('/api/capacity', requireAuth, requireLeader, async (req, res) => {
+app.get('/api/capacity', requireAuth, async (req, res) => {
   try {
+    if (!isLeader(req.user) && !req.user.isViewer) throw new Error('FORBIDDEN');
     const [membersRaw, tasksAll] = await Promise.all([readTab('Members'), readTab('Tasks')]);
     let visibleMembers = membersRaw;
-    if (req.user.role !== 'owner') {
+    if (req.user.role !== 'owner' && !req.user.isViewer) {
       visibleMembers = membersRaw.filter(m => m.reportsTo === req.user.id || m.id === req.user.id);
     }
     const capacity = visibleMembers.map(m => {
@@ -295,7 +296,10 @@ app.get('/api/state', requireAuth, async (req, res) => {
     }
     const leader = isLeader(req.user);
     let tasks, dashboardTasks, teams, visibleMembersRaw;
-    if (req.user.role === 'owner') {
+    if (req.user.role === 'owner' || req.user.isViewer) {
+      // Viewers are read-only oversight accounts — same full-board
+      // visibility as the owner, just with every mutating action blocked
+      // (requireLeader/requireOwner checks, and the move endpoint above).
       tasks = tasksAll;
       dashboardTasks = tasksAll;
       teams = teamsAll;
@@ -326,9 +330,10 @@ app.get('/api/state', requireAuth, async (req, res) => {
     const unreadCount = notifications.filter(n => !n.read).length;
 
     // Personal recognition data — additive, and only for an actual engineer
-    // account (owner isn't assigned tasks, so there's nothing to score).
+    // account (owner and viewers aren't assigned tasks, so there's nothing
+    // to score).
     let me = null;
-    if (req.user.role !== 'owner') {
+    if (req.user.role !== 'owner' && !req.user.isViewer) {
       try {
         const { member } = await evaluateMemberAchievements(req.user.id, tasksAll, null, membersRaw);
         const memberForStats = member || membersRaw.find(m => m.id === req.user.id) || {};
@@ -412,16 +417,20 @@ app.put('/api/teams/:id', requireAuth, requireOwner, async (req, res) => {
 // ---------- MEMBERS ----------
 app.post('/api/members', requireAuth, requireOwner, async (req, res) => {
   try {
-    const { name, username, password, teamId, isTeamLead, reportsTo, email } = req.body;
-    if (!name || !username || !password || !teamId) throw new Error('BAD_REQUEST');
+    const { name, username, password, teamId, isTeamLead, reportsTo, email, isViewer } = req.body;
+    // Viewers are read-only accounts for oversight — they see the whole
+    // board but can't assign, edit, move, or approve anything, so a team
+    // (which only matters for assignment/scoping) isn't required for them.
+    if (!name || !username || !password || (!teamId && !isViewer)) throw new Error('BAD_REQUEST');
     const hash = await bcrypt.hash(password, 10);
     let newMember;
     await updateTab('Members', rows => {
       if (rows.find(r => r.username.toLowerCase() === username.trim().toLowerCase())) throw new Error('USERNAME_TAKEN');
       newMember = {
         id: genId('m'), name, username: username.trim(), passwordHash: hash,
-        teamId, color: COLORS[rows.length % COLORS.length], isTeamLead: !!isTeamLead,
-        reportsTo: isTeamLead ? '' : (reportsTo || ''), email: (email || '').trim()
+        teamId: teamId || '', color: COLORS[rows.length % COLORS.length],
+        isTeamLead: isViewer ? false : !!isTeamLead, isViewer: !!isViewer,
+        reportsTo: (isViewer || isTeamLead) ? '' : (reportsTo || ''), email: (email || '').trim()
       };
       rows.push(newMember);
       return rows;
@@ -433,7 +442,7 @@ app.post('/api/members', requireAuth, requireOwner, async (req, res) => {
 
 app.put('/api/members/:id', requireAuth, requireOwner, async (req, res) => {
   try {
-    const { name, username, password, teamId, isTeamLead, reportsTo, email } = req.body;
+    const { name, username, password, teamId, isTeamLead, reportsTo, email, isViewer } = req.body;
     let updated;
     await updateTab('Members', async rows => {
       const m = rows.find(r => r.id === req.params.id);
@@ -443,8 +452,9 @@ app.put('/api/members/:id', requireAuth, requireOwner, async (req, res) => {
       if (username) m.username = username.trim();
       if (password) m.passwordHash = await bcrypt.hash(password, 10);
       if (teamId) m.teamId = teamId;
-      m.isTeamLead = !!isTeamLead;
-      m.reportsTo = m.isTeamLead ? '' : (reportsTo || '');
+      m.isViewer = !!isViewer;
+      m.isTeamLead = m.isViewer ? false : !!isTeamLead;
+      m.reportsTo = (m.isViewer || m.isTeamLead) ? '' : (reportsTo || '');
       if (email !== undefined) m.email = (email || '').trim();
       updated = m;
       return rows;
@@ -732,6 +742,7 @@ async function notifyMoveTransition(fromStatus, toStatus, task, actor) {
 
 app.post('/api/tasks/:id/move', requireAuth, async (req, res) => {
   try {
+    if (req.user.isViewer) throw new Error('FORBIDDEN');
     const { status } = req.body;
     const toIdx = COLUMN_ORDER.indexOf(status);
     if (toIdx < 0) throw new Error('BAD_REQUEST');
