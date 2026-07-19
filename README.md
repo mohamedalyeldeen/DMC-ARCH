@@ -462,3 +462,34 @@ waiting on them:
 These reuse the existing in-app notification system (the bell icon) — no
 new UI, just new triggers alongside the existing "assigned"/"reassigned"
 notifications.
+
+## Phase 8: Structured task categorization (Zone / Project / Building / Task title)
+
+The "Task title" free-text field in the assignment window is now a
+structured set of fields instead, so the team leader picks from a
+consistent taxonomy rather than typing a title from scratch:
+
+- **Zone** — a fixed dropdown: October, New Cairo, North Coast.
+- **Project** — cascades from Zone (e.g. October offers Club District,
+  Lagoon, Mountain Park, Commercial Building, COP; New Cairo and North
+  Coast have their own lists). Disabled until a zone is picked.
+- **Building** — free text (no fixed list was given for this one).
+- **Task title** — the original free-text field, now a fixed dropdown:
+  Coordination, RFI, RFP, SD, Study, QS, Clean Copy, As Built.
+
+All four are required except Building, which is optional. The zone→project
+list lives in one place — `ZONE_PROJECTS` and `TASK_TYPES` in `server.js`
+— and is served to the client via `GET /api/state` (`taxonomy` field) so
+there's a single source of truth; add or rename a zone/project/task type
+there and the dropdowns follow automatically.
+
+**Backward compatibility:** the board, Gantt view, dashboard, notifications,
+achievements, and search all still work off a single `title` string, so
+nothing else in the app needed to change. The server composes that string
+from the four fields (e.g. `RFI · October · Club District · Building 3`)
+and stores it alongside the four raw fields — the raw fields are what the
+task modal reads back when editing, and what the board card now displays
+as a structured location line above the task type. Tasks created before
+this change simply don't have zone/project/building/taskType set; the
+board falls back to showing their original title as before, and editing
+one just means picking fresh categorization for it going forward.

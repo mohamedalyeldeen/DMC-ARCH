@@ -18,6 +18,33 @@ app.use(express.static(path.join(__dirname, 'public')));
 const COLORS = ['#E2892B', '#3E7C74', '#7C6AA6', '#C4574B', '#4C7EA8', '#8A9A3B'];
 const COLUMN_ORDER = ['todo', 'inprogress', 'submitted', 'done'];
 
+// Task categorization taxonomy — replaces free-text task titles with a
+// structured Zone → Project cascade, a free-text Building, and a fixed
+// task-type dropdown. Validated server-side too (not just in the UI) so a
+// bad request can't store an inconsistent zone/project pairing.
+const ZONE_PROJECTS = {
+  'October': ['Club District', 'Lagoon', 'Mountain Park', 'Commercial Building', 'COP'],
+  'New Cairo': ['Old Lagoon', 'New Lagoon', 'Club District', 'Body', 'Heart Work', 'Aliva', 'MV1 Extension'],
+  'North Coast': ['Evia', 'Skala', 'Crete', 'Rhodes', 'Levels']
+};
+const TASK_TYPES = ['Coordination', 'RFI', 'RFP', 'SD', 'Study', 'QS', 'Clean Copy', 'As Built'];
+
+function validateTaskCategorization(zone, project, taskType) {
+  if (!zone || !project || !taskType) throw new Error('BAD_REQUEST');
+  if (!ZONE_PROJECTS[zone] || !ZONE_PROJECTS[zone].includes(project)) throw new Error('BAD_REQUEST');
+  if (!TASK_TYPES.includes(taskType)) throw new Error('BAD_REQUEST');
+}
+
+// The display "title" everywhere else in the app (board cards, Gantt bars,
+// notifications, achievements, dashboard, search) stays a single string —
+// this composes it from the four structured fields so none of that other
+// code needs to know about zone/project/building/taskType individually.
+function composeTaskTitle({ zone, project, building, taskType }) {
+  const parts = [taskType, zone, project];
+  if (building) parts.push(building);
+  return parts.filter(Boolean).join(' · ');
+}
+
 function genId(prefix) { return prefix + crypto.randomBytes(4).toString('hex'); }
 function today() { return new Date().toISOString().slice(0, 10); }
 
@@ -316,7 +343,7 @@ app.get('/api/state', requireAuth, async (req, res) => {
       }
     }
 
-    res.json({ teams, members, tasks, dashboardTasks, notifications, unreadCount, you: req.user, me });
+    res.json({ teams, members, tasks, dashboardTasks, notifications, unreadCount, you: req.user, me, taxonomy: { zoneProjects: ZONE_PROJECTS, taskTypes: TASK_TYPES } });
   } catch (e) { sendErr(res, e); }
 });
 
@@ -438,10 +465,11 @@ app.delete('/api/members/:id', requireAuth, requireOwner, async (req, res) => {
 // ---------- TASKS ----------
 app.post('/api/tasks', requireAuth, requireLeader, async (req, res) => {
   try {
-    const { title, description, assignee, priority, allowOverlap, mode, durationDays, insertAfterTaskId } = req.body;
+    const { zone, project, building, taskType, description, assignee, priority, allowOverlap, mode, durationDays, insertAfterTaskId } = req.body;
     const bodyStart = req.body.startDate;
     const bodyEnd = req.body.endDate;
-    if (!title) throw new Error('BAD_REQUEST');
+    validateTaskCategorization(zone, project, taskType);
+    const title = composeTaskTitle({ zone, project, building, taskType });
     if (req.user.role !== 'owner') {
       if (!assignee) throw new Error('FORBIDDEN');
       const members = await readTab('Members');
@@ -471,6 +499,7 @@ app.post('/api/tasks', requireAuth, requireLeader, async (req, res) => {
         id: genId('t'), title, description: description || '', assignee: assignee || '',
         priority: priority || 'M', due: endDate || '', status: 'todo', completedAt: '',
         startDate, endDate, sequence,
+        zone, project, building: building || '', taskType,
         history: [{ status: 'todo', at: today() }], createdAt: today()
       };
       rows.push(newTask);
@@ -486,7 +515,7 @@ app.post('/api/tasks', requireAuth, requireLeader, async (req, res) => {
 
 app.put('/api/tasks/:id', requireAuth, requireLeader, async (req, res) => {
   try {
-    const { title, description, assignee, priority, allowOverlap } = req.body;
+    const { zone, project, building, taskType, description, assignee, priority, allowOverlap } = req.body;
     const bodyStart = req.body.startDate;
     const bodyEnd = req.body.endDate;
     let membersCache = null;
@@ -527,7 +556,15 @@ app.put('/api/tasks/:id', requireAuth, requireLeader, async (req, res) => {
         if (prevAssignee) scheduler.removeAndCompact(rows, prevAssignee, prevSnapshot);
       }
 
-      if (title) t.title = title;
+      if (zone !== undefined || project !== undefined || building !== undefined || taskType !== undefined) {
+        const nextZone = zone !== undefined ? zone : t.zone;
+        const nextProject = project !== undefined ? project : t.project;
+        const nextBuilding = building !== undefined ? building : t.building;
+        const nextTaskType = taskType !== undefined ? taskType : t.taskType;
+        validateTaskCategorization(nextZone, nextProject, nextTaskType);
+        t.zone = nextZone; t.project = nextProject; t.building = nextBuilding || ''; t.taskType = nextTaskType;
+        t.title = composeTaskTitle({ zone: nextZone, project: nextProject, building: nextBuilding, taskType: nextTaskType });
+      }
       t.description = description || '';
       t.assignee = newAssignee;
       t.startDate = newStart || '';
@@ -598,7 +635,8 @@ app.post('/api/tasks/restore', requireAuth, requireLeader, async (req, res) => {
         assignee: snapshot.assignee || '', priority: snapshot.priority || 'M', due: snapshot.due || '',
         status: snapshot.status || 'todo', completedAt: snapshot.completedAt || '',
         startDate: snapshot.startDate || '', endDate: snapshot.endDate || '',
-        sequence: snapshot.sequence || 0, history: snapshot.history || [], createdAt: snapshot.createdAt || today()
+        sequence: snapshot.sequence || 0, history: snapshot.history || [], createdAt: snapshot.createdAt || today(),
+        zone: snapshot.zone || '', project: snapshot.project || '', building: snapshot.building || '', taskType: snapshot.taskType || ''
       };
       if (restoredTask.assignee) {
         scheduler.restoreRemovedTask(rows, restoredTask.assignee, restoredTask);
@@ -644,7 +682,8 @@ app.post('/api/tasks/:id/duplicate', requireAuth, requireLeader, async (req, res
           assignee: assigneeId || '', priority: original.priority, due: endDate,
           status: 'todo', completedAt: '', startDate, endDate,
           sequence: assigneeId ? scheduler.nextSequence(rows, assigneeId) : 0,
-          history: [{ status: 'todo', at: today() }], createdAt: today()
+          history: [{ status: 'todo', at: today() }], createdAt: today(),
+          zone: original.zone || '', project: original.project || '', building: original.building || '', taskType: original.taskType || ''
         };
         rows.push(dup);
         created.push(dup);
