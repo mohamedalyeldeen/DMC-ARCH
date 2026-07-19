@@ -136,17 +136,20 @@
     }catch(e){ err.textContent = e.message; }
   });
 
-  document.getElementById('ownerTabBtn').addEventListener('click', ()=>{
-    document.getElementById('ownerTabBtn').classList.add('active');
-    document.getElementById('memberTabBtn').classList.remove('active');
-    document.getElementById('ownerLoginForm').style.display='block';
-    document.getElementById('memberLoginForm').style.display='none';
-  });
-  document.getElementById('memberTabBtn').addEventListener('click', ()=>{
-    document.getElementById('memberTabBtn').classList.add('active');
-    document.getElementById('ownerTabBtn').classList.remove('active');
-    document.getElementById('memberLoginForm').style.display='block';
-    document.getElementById('ownerLoginForm').style.display='none';
+  const AUTH_TABS = [
+    { tabId: 'ownerTabBtn', formId: 'ownerLoginForm' },
+    { tabId: 'memberTabBtn', formId: 'memberLoginForm' },
+    { tabId: 'viewerTabBtn', formId: 'viewerLoginForm' }
+  ];
+  function activateAuthTab(activeTabId){
+    AUTH_TABS.forEach(({tabId, formId})=>{
+      document.getElementById(tabId).classList.toggle('active', tabId===activeTabId);
+      document.getElementById(formId).style.display = tabId===activeTabId ? 'block' : 'none';
+    });
+    document.getElementById('loginError').textContent = '';
+  }
+  AUTH_TABS.forEach(({tabId})=>{
+    document.getElementById(tabId).addEventListener('click', ()=> activateAuthTab(tabId));
   });
 
   document.getElementById('ownerLoginBtn').addEventListener('click', async ()=>{
@@ -163,6 +166,22 @@
   document.getElementById('memberLoginBtn').addEventListener('click', async ()=>{
     const username = document.getElementById('memberUserInput').value;
     const pw = document.getElementById('memberPwInput').value;
+    const err = document.getElementById('loginError');
+    try{
+      const data = await api('POST', '/api/auth/login-member', {username, password: pw});
+      session = data;
+      err.textContent = '';
+      enterApp();
+    }catch(e){ err.textContent = e.message; }
+  });
+
+  // Viewer accounts are still Members under the hood (just with isViewer
+  // set) so this hits the same login endpoint as the Team member tab —
+  // the separate tab exists purely so a viewer isn't hunting for their
+  // login under a label that says "Team member".
+  document.getElementById('viewerLoginBtn').addEventListener('click', async ()=>{
+    const username = document.getElementById('viewerUserInput').value;
+    const pw = document.getElementById('viewerPwInput').value;
     const err = document.getElementById('loginError');
     try{
       const data = await api('POST', '/api/auth/login-member', {username, password: pw});
@@ -192,6 +211,8 @@
     document.getElementById('ownerPwInput').value='';
     document.getElementById('memberUserInput').value='';
     document.getElementById('memberPwInput').value='';
+    document.getElementById('viewerUserInput').value='';
+    document.getElementById('viewerPwInput').value='';
   });
 
   document.getElementById('changePwBtn').addEventListener('click', async ()=>{
