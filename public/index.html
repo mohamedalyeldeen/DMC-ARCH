@@ -150,8 +150,9 @@
         <div class="field"><label>Password</label><input type="text" id="mmPassword" maxlength="40" autocomplete="off" placeholder="Leave blank to keep current"></div>
       </div>
       <div class="field"><label>Company email (for task notifications)</label><input type="email" id="mmEmail" maxlength="80" placeholder="name@dmc-curve.com"></div>
-      <div class="field"><label>Team</label><select id="mmTeam"></select></div>
-      <div class="field field-check"><input type="checkbox" id="mmLead"><label style="margin:0;text-transform:none;font-size:13px;">Make this person a team leader (can manage &amp; approve tasks)</label></div>
+      <div class="field" id="teamField"><label>Team</label><select id="mmTeam"></select></div>
+      <div class="field field-check"><input type="checkbox" id="mmViewer"><label style="margin:0;text-transform:none;font-size:13px;">Viewer account (read-only — sees everything, can't assign, edit, move, or approve anything)</label></div>
+      <div class="field field-check" id="mmLeadField"><input type="checkbox" id="mmLead"><label style="margin:0;text-transform:none;font-size:13px;">Make this person a team leader (can manage &amp; approve tasks)</label></div>
       <div class="field" id="reportsToField"><label>Reports to (team leader)</label><select id="mmReportsTo"></select></div>
       <div class="modal-actions">
         <button type="button" class="btn-text" id="deleteMemberBtn" style="display:none;">Remove member</button>

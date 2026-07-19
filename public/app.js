@@ -212,9 +212,14 @@
   // ---------- STATE / PERMISSIONS ----------
   function isOwner(){ return session && session.role==='owner'; }
   function isTeamLead(){ return session && session.role==='teamlead'; }
-  function isLeaderLike(){ return isOwner() || isTeamLead(); }
+  function isViewer(){ return session && session.role==='viewer'; }
+  // Viewers see the full board like a leader would (whole-board visibility,
+  // team filters, capacity/dashboard) but can never act on anything — see
+  // canManageTasks() below, which is the actual permission gate and
+  // deliberately excludes them.
+  function isLeaderLike(){ return isOwner() || isTeamLead() || isViewer(); }
   function canManageMembers(){ return isOwner(); }
-  function canManageTasks(){ return isLeaderLike(); }
+  function canManageTasks(){ return isOwner() || isTeamLead(); }
   function isMyReport(memberId){
     if(isOwner()) return true;
     if(memberId===session.id) return true; // team leaders can self-assign (Phase 2)
@@ -256,7 +261,7 @@
     renderNotifBadge();
     renderSidebar();
     document.getElementById('tabCapacityBtn').style.display = isLeaderLike() ? 'inline-block' : 'none';
-    document.getElementById('myStatsBtn').style.display = isOwner() ? 'none' : 'inline-block';
+    document.getElementById('myStatsBtn').style.display = (isOwner() || isViewer()) ? 'none' : 'inline-block';
     document.getElementById('board').style.display='none';
     document.getElementById('ganttView').style.display='none';
     document.getElementById('dashboardView').style.display='none';
@@ -288,6 +293,7 @@
   function renderRoleBadge(){
     let label = '';
     if(isOwner()) label = (session.name || 'Owner') + ' (Owner)';
+    else if(isViewer()) label = (session.name || 'Viewer') + ' (Viewer — read only)';
     else if(isTeamLead()) label = 'Team Leader — ' + (teamById(session.teamId)||{name:''}).name;
     else label = 'Member — ' + (teamById(session.teamId)||{name:''}).name;
     document.getElementById('roleBadge').textContent = label;
@@ -481,6 +487,35 @@
       block.appendChild(wrap);
       list.appendChild(block);
     });
+
+    const viewers = state.members.filter(m=>m.isViewer);
+    if(viewers.length>0){
+      const block = document.createElement('div');
+      block.className = 'team-block';
+      const head = document.createElement('div');
+      head.className = 'team-head';
+      head.innerHTML = `<div class="team-dot" style="background:var(--text-dim-on-ink);"></div><div class="team-name">Viewers</div><div class="team-count">${viewers.length}</div>`;
+      block.appendChild(head);
+      const wrap = document.createElement('div');
+      wrap.className = 'team-members';
+      viewers.forEach(m=>{
+        const row = document.createElement('div');
+        row.className = 'member-row';
+        row.innerHTML = `
+          <div class="avatar" style="background:${m.color};">${initials(m.name)}</div>
+          <span class="lead-tag" style="color:var(--text-dim-on-ink);border-color:var(--text-dim-on-ink);">VIEW</span>
+          <div class="member-name">${escapeHtml(m.name)}</div>
+          ${canManageMembers()? `<div class="ed-x" data-id="${m.id}">✎</div><div class="rm-x" data-id="${m.id}">✕</div>`:''}
+        `;
+        row.addEventListener('click', (e)=>{
+          if(e.target.classList.contains('rm-x')){ e.stopPropagation(); removeMember(m.id); return; }
+          if(e.target.classList.contains('ed-x')){ e.stopPropagation(); openMemberModal(m.id); return; }
+        });
+        wrap.appendChild(row);
+      });
+      block.appendChild(wrap);
+      list.appendChild(block);
+    }
   }
 
   async function renameTeam(teamId){
@@ -516,7 +551,15 @@
     const isLead = document.getElementById('mmLead').checked;
     document.getElementById('reportsToField').style.display = isLead ? 'none' : 'block';
   }
+  function toggleViewerVisibility(){
+    const isViewerAccount = document.getElementById('mmViewer').checked;
+    document.getElementById('teamField').style.display = isViewerAccount ? 'none' : 'block';
+    document.getElementById('mmLeadField').style.display = isViewerAccount ? 'none' : 'block';
+    document.getElementById('reportsToField').style.display = isViewerAccount ? 'none' : (document.getElementById('mmLead').checked ? 'none' : 'block');
+    if(isViewerAccount) document.getElementById('mmLead').checked = false;
+  }
   document.getElementById('mmLead').addEventListener('change', toggleReportsToVisibility);
+  document.getElementById('mmViewer').addEventListener('change', toggleViewerVisibility);
   document.getElementById('mmTeam').addEventListener('change', (e)=>{
     populateReportsToOptions(e.target.value, '');
   });
@@ -539,15 +582,18 @@
       document.getElementById('mmEmail').value = m.email || '';
       teamSel.value = m.teamId;
       document.getElementById('mmLead').checked = !!m.isTeamLead;
+      document.getElementById('mmViewer').checked = !!m.isViewer;
       populateReportsToOptions(m.teamId, m.reportsTo);
     } else {
       document.getElementById('memberModalTitle').textContent = 'Add team member';
       document.getElementById('saveMemberBtn').textContent = 'Add member';
       document.getElementById('deleteMemberBtn').style.display='none';
       document.getElementById('mmLead').checked = false;
+      document.getElementById('mmViewer').checked = false;
       populateReportsToOptions(teamSel.value, '');
     }
     toggleReportsToVisibility();
+    toggleViewerVisibility();
     document.getElementById('memberModalOverlay').classList.add('open');
   }
   function closeMemberModal(){ document.getElementById('memberModalOverlay').classList.remove('open'); modalOpenFlag = false; }
@@ -562,15 +608,16 @@
     const password = document.getElementById('mmPassword').value;
     const teamId = document.getElementById('mmTeam').value;
     const isTeamLead = document.getElementById('mmLead').checked;
+    const isViewerAccount = document.getElementById('mmViewer').checked;
     const reportsTo = document.getElementById('mmReportsTo').value;
     const email = document.getElementById('mmEmail').value.trim();
     if(!name || !username) return;
     if(!id && !password){ alert('Set a password for the new member.'); return; }
     try{
       if(id){
-        await api('PUT', '/api/members/'+id, {name, username, password, teamId, isTeamLead, reportsTo, email});
+        await api('PUT', '/api/members/'+id, {name, username, password, teamId, isTeamLead, isViewer: isViewerAccount, reportsTo, email});
       } else {
-        await api('POST', '/api/members', {name, username, password, teamId, isTeamLead, reportsTo, email});
+        await api('POST', '/api/members', {name, username, password, teamId, isTeamLead, isViewer: isViewerAccount, reportsTo, email});
       }
       closeMemberModal();
       await refreshState();
@@ -635,7 +682,7 @@
   function renderTicket(t, colIdx){
     const el = document.createElement('div');
     el.className = 'ticket';
-    el.draggable = true;
+    el.draggable = canManageThisTask(t) || (session && t.assignee===session.id);
     el.dataset.id = t.id;
     const member = memberById(t.assignee);
     const overdue = t.endDate && t.endDate < todayStr() && t.status!=='done';
