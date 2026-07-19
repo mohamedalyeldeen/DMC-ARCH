@@ -396,7 +396,7 @@
     const el = document.getElementById('sidebar');
     if(isLeaderLike()){
       el.innerHTML = `
-        <img src="/dmc-logo.png" class="brand-logo" alt="DMC Contracting"><div class="brand">Cli<span>ck</span></div>
+        <img src="/dmc-logo-white.png" class="brand-logo" alt="DMC Contracting"><div class="brand">Cli<span>ck</span></div>
         <div class="brand-sub">Team task ledger</div>
         <div class="side-section">
           <div class="side-label"><span>Teams</span>${canManageMembers()?'<button class="ghost-btn" id="addMemberBtn" style="padding:3px 8px;">+ Member</button>':''}</div>
@@ -420,7 +420,7 @@
     } else {
       const team = teamById(session.teamId);
       el.innerHTML = `
-        <img src="/dmc-logo.png" class="brand-logo" alt="DMC Contracting"><div class="brand">Cli<span>ck</span></div>
+        <img src="/dmc-logo-white.png" class="brand-logo" alt="DMC Contracting"><div class="brand">Cli<span>ck</span></div>
         <div class="brand-sub">Team task ledger</div>
         <div class="info-panel">
           Signed in as<br><b>${escapeHtml(session.name)}</b><br>
