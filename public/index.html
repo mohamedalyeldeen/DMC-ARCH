@@ -83,7 +83,21 @@
     <h3 id="modalTitle">Assign a new task</h3>
     <form id="taskForm">
       <input type="hidden" id="taskId">
-      <div class="field"><label>Task title</label><input type="text" id="fTitle" required maxlength="80" placeholder="e.g. Draft client proposal"></div>
+      <div class="field-row">
+        <div class="field"><label>Zone</label>
+          <select id="fZone"><option value="">Select a zone…</option></select>
+        </div>
+        <div class="field"><label>Project</label>
+          <select id="fProject" disabled><option value="">Select a zone first…</option></select>
+        </div>
+      </div>
+      <div class="field-row">
+        <div class="field"><label>Building</label><input type="text" id="fBuilding" maxlength="60" placeholder="e.g. Building 3"></div>
+        <div class="field"><label>Task title</label>
+          <select id="fTaskType"><option value="">Select a task type…</option></select>
+        </div>
+      </div>
+      <div class="field-error" id="taskFieldsError">Zone, project, and task title are all required.</div>
       <div class="field"><label>Details</label><textarea id="fDesc" maxlength="400" placeholder="What needs to get done…"></textarea></div>
       <div class="field-row">
         <div class="field"><label>Assign to</label><select id="fAssignee"></select></div>

@@ -651,7 +651,8 @@
         <div class="ticket-priority" style="background:${PRIORITY_COLOR[t.priority]};">${t.priority}</div>
       </div>
       <div class="ticket-body">
-        <div class="ticket-title">${escapeHtml(t.title)}</div>
+        ${t.taskType ? `<div class="ticket-location">${escapeHtml(t.zone||'')} · ${escapeHtml(t.project||'')}${t.building?' · '+escapeHtml(t.building):''}</div>` : ''}
+        <div class="ticket-title">${escapeHtml(t.taskType || t.title)}</div>
         ${t.description? `<div class="ticket-desc">${escapeHtml(t.description)}</div>`:''}
         <div class="ticket-meta">
           <div class="ticket-assignee">${member? `<div class="avatar" style="width:18px;height:18px;font-size:8px;background:${member.color};">${initials(member.name)}</div><span>${escapeHtml(member.name)}</span>`:'<span style="color:var(--text-dim-on-paper);">Unassigned</span>'}</div>
@@ -816,9 +817,59 @@
     }catch(e){ alert(e.message); }
   });
 
+  // ---------- TASK CATEGORIZATION (Zone / Project / Building / Task title) ----------
+  // The zone→project cascade and the task-type list come from the server
+  // (state.taxonomy) rather than being duplicated here, so there's one place
+  // to update if the list of zones/projects ever changes.
+  let taxonomyPopulated = false;
+  function populateTaxonomyOptions(){
+    if(taxonomyPopulated || !state.taxonomy) return;
+    const zoneSel = document.getElementById('fZone');
+    Object.keys(state.taxonomy.zoneProjects).forEach(zone=>{
+      const opt = document.createElement('option'); opt.value = zone; opt.textContent = zone;
+      zoneSel.appendChild(opt);
+    });
+    const typeSel = document.getElementById('fTaskType');
+    state.taxonomy.taskTypes.forEach(tt=>{
+      const opt = document.createElement('option'); opt.value = tt; opt.textContent = tt;
+      typeSel.appendChild(opt);
+    });
+    taxonomyPopulated = true;
+  }
+  function populateProjectOptions(zone, selectedProject){
+    const projectSel = document.getElementById('fProject');
+    projectSel.innerHTML = '';
+    const projects = (state.taxonomy && state.taxonomy.zoneProjects[zone]) || [];
+    if(!zone || projects.length===0){
+      projectSel.innerHTML = '<option value="">Select a zone first…</option>';
+      projectSel.disabled = true;
+      return;
+    }
+    projectSel.disabled = false;
+    projectSel.innerHTML = '<option value="">Select a project…</option>' +
+      projects.map(p=>`<option value="${escapeHtml(p)}">${escapeHtml(p)}</option>`).join('');
+    if(selectedProject && projects.includes(selectedProject)) projectSel.value = selectedProject;
+  }
+  document.getElementById('fZone').addEventListener('change', (e)=>{
+    populateProjectOptions(e.target.value, '');
+  });
+  ['fZone','fProject','fTaskType'].forEach(id=>{
+    document.getElementById(id).addEventListener('change', checkTaskFieldsLive);
+  });
+
+  function checkTaskFieldsLive(){
+    const zone = document.getElementById('fZone').value;
+    const project = document.getElementById('fProject').value;
+    const taskType = document.getElementById('fTaskType').value;
+    const ok = !!(zone && project && taskType);
+    document.getElementById('taskFieldsError').classList.toggle('show', false);
+    return ok;
+  }
+
   function openTaskModal(taskId){
     if(!canManageTasks()) return;
     modalOpenFlag = true;
+    populateTaxonomyOptions();
     const form = document.getElementById('taskForm');
     form.reset();
     document.getElementById('taskId').value = taskId || '';
@@ -827,7 +878,10 @@
       document.getElementById('modalTitle').textContent='Edit task';
       document.getElementById('saveTaskBtn').textContent='Save changes';
       document.getElementById('deleteTaskBtn').style.display='inline';
-      document.getElementById('fTitle').value=t.title;
+      document.getElementById('fZone').value = t.zone || '';
+      populateProjectOptions(t.zone || '', t.project || '');
+      document.getElementById('fBuilding').value = t.building || '';
+      document.getElementById('fTaskType').value = t.taskType || '';
       document.getElementById('fDesc').value=t.description||'';
       fillAssigneeOptions(t.assignee);
       document.getElementById('fPriority').value=t.priority;
@@ -841,6 +895,10 @@
       document.getElementById('modalTitle').textContent='Assign a new task';
       document.getElementById('saveTaskBtn').textContent='Assign task';
       document.getElementById('deleteTaskBtn').style.display='none';
+      document.getElementById('fZone').value = '';
+      populateProjectOptions('', '');
+      document.getElementById('fBuilding').value = '';
+      document.getElementById('fTaskType').value = '';
       fillAssigneeOptions('');
       document.getElementById('fPriority').value='M';
       document.getElementById('fStartDate').value='';
@@ -851,6 +909,7 @@
       populateInsertAfterOptions(document.getElementById('fAssignee').value);
     }
     toggleAutoScheduleFields();
+    document.getElementById('taskFieldsError').classList.remove('show');
     document.getElementById('dateFieldError').classList.remove('show');
     document.getElementById('fStartDate').classList.remove('date-invalid');
     document.getElementById('fEndDate').classList.remove('date-invalid');
@@ -865,8 +924,14 @@
     e.preventDefault();
     if(!canManageTasks()) return;
     const id = document.getElementById('taskId').value;
-    const title = document.getElementById('fTitle').value.trim();
-    if(!title) return;
+    const zone = document.getElementById('fZone').value;
+    const project = document.getElementById('fProject').value;
+    const building = document.getElementById('fBuilding').value.trim();
+    const taskType = document.getElementById('fTaskType').value;
+    if(!checkTaskFieldsLive()){
+      document.getElementById('taskFieldsError').classList.add('show');
+      return;
+    }
     const description = document.getElementById('fDesc').value.trim();
     const assignee = document.getElementById('fAssignee').value || '';
     const priority = document.getElementById('fPriority').value;
@@ -876,23 +941,24 @@
       if(id){
         const prevTask = state.tasks.find(x=>x.id===id);
         const beforeSnapshot = prevTask ? {
-          title: prevTask.title, description: prevTask.description, assignee: prevTask.assignee,
+          zone: prevTask.zone, project: prevTask.project, building: prevTask.building, taskType: prevTask.taskType,
+          description: prevTask.description, assignee: prevTask.assignee,
           priority: prevTask.priority, startDate: prevTask.startDate, endDate: prevTask.endDate
         } : null;
         await api('PUT', '/api/tasks/'+id, {
-          title, description, assignee, priority,
+          zone, project, building, taskType, description, assignee, priority,
           startDate: document.getElementById('fStartDate').value || '',
           endDate: document.getElementById('fEndDate').value || '',
           allowOverlap: document.getElementById('fAllowOverlap').checked
         });
         if(beforeSnapshot){
-          pushUndo(`Edited "${beforeSnapshot.title}"`, async ()=>{
+          pushUndo(`Edited "${prevTask.title}"`, async ()=>{
             await api('PUT', '/api/tasks/'+id, Object.assign({}, beforeSnapshot, {allowOverlap:true}));
           });
         }
       } else if(isAuto){
         const created = await api('POST', '/api/tasks', {
-          title, description, assignee, priority,
+          zone, project, building, taskType, description, assignee, priority,
           mode: 'auto',
           durationDays: parseInt(document.getElementById('fDuration').value,10) || 1,
           insertAfterTaskId: document.getElementById('fInsertAfter').value || null
@@ -900,7 +966,7 @@
         pushUndo(`Created "${created.title}"`, async ()=>{ await api('DELETE', '/api/tasks/'+created.id); });
       } else {
         const created = await api('POST', '/api/tasks', {
-          title, description, assignee, priority,
+          zone, project, building, taskType, description, assignee, priority,
           startDate: document.getElementById('fStartDate').value || '',
           endDate: document.getElementById('fEndDate').value || '',
           allowOverlap: document.getElementById('fAllowOverlap').checked

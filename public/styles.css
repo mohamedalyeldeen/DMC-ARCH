@@ -104,6 +104,7 @@ body{background:var(--ink);color:var(--text-on-ink);font-family:'Inter',sans-ser
 .ticket-num{font-family:'IBM Plex Mono',monospace;font-size:10.5px;color:var(--text-dim-on-paper);letter-spacing:0.5px;}
 .ticket-priority{width:16px;height:16px;border-radius:50%;font-family:'IBM Plex Mono',monospace;font-size:9px;font-weight:700;color:var(--paper);display:flex;align-items:center;justify-content:center;}
 .ticket-body{padding:12px;}
+.ticket-location{font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:.3px;text-transform:uppercase;color:var(--text-dim-on-paper);margin-bottom:4px;}
 .ticket-title{font-weight:600;font-size:13.5px;line-height:1.35;margin-bottom:8px;}
 .ticket-desc{font-size:11.5px;color:var(--text-dim-on-paper);line-height:1.4;margin-bottom:10px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;}
 .ticket-meta{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;}
