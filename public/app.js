@@ -287,6 +287,7 @@
     document.getElementById('ganttView').style.display='none';
     document.getElementById('dashboardView').style.display='none';
     document.getElementById('logView').style.display='none';
+    document.getElementById('prodDashboardView').style.display='none';
     document.getElementById('capacityView').style.display='none';
     if(activeTab==='board'){
       document.getElementById('viewTitle').textContent = isLeaderLike() ? "This Week's Jobs" : 'My Tasks';
@@ -299,15 +300,20 @@
       document.getElementById('newTaskBtn').style.display='none';
       renderGantt();
     } else if(activeTab==='dashboard'){
-      document.getElementById('viewTitle').textContent = 'Performance Ledger';
+      document.getElementById('viewTitle').textContent = 'Tasks Dashboard';
       document.getElementById('dashboardView').style.display='block';
       document.getElementById('newTaskBtn').style.display='none';
       renderDashboard();
     } else if(activeTab==='log'){
-      document.getElementById('viewTitle').textContent = 'Productivity Log';
+      document.getElementById('viewTitle').textContent = 'Productivity';
       document.getElementById('logView').style.display='block';
       document.getElementById('newTaskBtn').style.display='none';
       loadAndRenderLog();
+    } else if(activeTab==='proddash'){
+      document.getElementById('viewTitle').textContent = 'Productivity Dashboard';
+      document.getElementById('prodDashboardView').style.display='block';
+      document.getElementById('newTaskBtn').style.display='none';
+      renderProductivityDashboard();
     } else {
       document.getElementById('viewTitle').textContent = 'Capacity';
       document.getElementById('capacityView').style.display='block';
@@ -400,7 +406,7 @@
     catch(e){ alert(e.message); }
   });
 
-  const ALL_TAB_BTNS = ['tabBoardBtn','tabGanttBtn','tabDashBtn','tabLogBtn','tabCapacityBtn'];
+  const ALL_TAB_BTNS = ['tabBoardBtn','tabGanttBtn','tabDashBtn','tabLogBtn','tabProdDashBtn','tabCapacityBtn'];
   function activateTab(name, btnId){
     activeTab = name;
     ALL_TAB_BTNS.forEach(id=> document.getElementById(id).classList.toggle('active', id===btnId));
@@ -410,6 +416,7 @@
   document.getElementById('tabGanttBtn').addEventListener('click', ()=> activateTab('gantt','tabGanttBtn'));
   document.getElementById('tabDashBtn').addEventListener('click', ()=> activateTab('dashboard','tabDashBtn'));
   document.getElementById('tabLogBtn').addEventListener('click', ()=> activateTab('log','tabLogBtn'));
+  document.getElementById('tabProdDashBtn').addEventListener('click', ()=> activateTab('proddash','tabProdDashBtn'));
   document.getElementById('tabCapacityBtn').addEventListener('click', ()=> activateTab('capacity','tabCapacityBtn'));
 
   function renderStats(){
@@ -1639,6 +1646,110 @@
     `;
     document.getElementById('sortByAvailBtn').addEventListener('click', ()=>{ capacitySortMode='availability'; renderCapacityList(); });
     document.getElementById('sortByCapBtn').addEventListener('click', ()=>{ capacitySortMode='capacity'; renderCapacityList(); });
+  }
+
+  // ---------- PRODUCTIVITY DASHBOARD (Power-BI-style charts) ----------
+  // Pure client-side visuals over data already loaded for the board/Log tab
+  // — no new API calls, so opening this tab adds no extra load either.
+  const CHART_COLORS = ['#E2892B','#3E7C74','#7C6AA6','#C4574B','#4C7EA8','#8A9A3B','#D9A441','#5C8A99'];
+
+  function buildConicGradient(segments){
+    const total = segments.reduce((s,x)=>s+x.value,0);
+    if(total<=0) return 'var(--ink)';
+    let acc = 0;
+    const stops = segments.filter(s=>s.value>0).map(seg=>{
+      const start = (acc/total*360).toFixed(2);
+      acc += seg.value;
+      const end = (acc/total*360).toFixed(2);
+      return `${seg.color} ${start}deg ${end}deg`;
+    }).join(', ');
+    return `conic-gradient(${stops})`;
+  }
+
+  function renderDonutChart(segments, total, centerLabel){
+    const gradient = buildConicGradient(segments);
+    const legend = segments.filter(s=>s.value>0).map(s=>{
+      const pct = total>0 ? Math.round((s.value/total)*100) : 0;
+      return `<div class="legend-row"><span class="legend-swatch" style="background:${s.color};"></span><span class="legend-label">${escapeHtml(s.label)}</span><span class="legend-val">${s.value} (${pct}%)</span></div>`;
+    }).join('');
+    return `
+      <div class="donut-wrap">
+        <div class="donut" style="background:${gradient};">
+          <div class="donut-hole">
+            <div class="donut-center-num">${total}</div>
+            <div class="donut-center-lbl">${escapeHtml(centerLabel||'total')}</div>
+          </div>
+        </div>
+        <div class="donut-legend">${legend || '<div class="notif-empty">No drawings recorded yet.</div>'}</div>
+      </div>
+    `;
+  }
+
+  function renderBarChart(items){
+    const max = Math.max(1, ...items.map(i=>i.value));
+    const rows = items.map(i=>`
+      <div class="pbar-row">
+        <div class="pbar-label" title="${escapeHtml(i.label)}">${escapeHtml(i.label)}</div>
+        <div class="bar-track" style="width:100%;"><div class="bar-fill" style="width:${Math.round((i.value/max)*100)}%;"></div></div>
+        <div class="pbar-val">${i.value}</div>
+      </div>
+    `).join('');
+    return `<div class="pbar-chart">${rows || '<div class="notif-empty">No data yet.</div>'}</div>`;
+  }
+
+  function renderProductivityDashboard(){
+    const el = document.getElementById('prodDashboardView');
+    const pool = doneTasksPool();
+    const taskTypes = (state.taxonomy && state.taxonomy.taskTypes) || [];
+    const zoneProjects = (state.taxonomy && state.taxonomy.zoneProjects) || {};
+
+    const byType = taskTypes.map((type,i)=>({
+      label: type,
+      value: pool.filter(t=>t.taskType===type).reduce((s,t)=> s+(parseInt(t.numDrawings,10)||0), 0),
+      color: CHART_COLORS[i % CHART_COLORS.length]
+    }));
+    const totalDrawings = byType.reduce((s,x)=>s+x.value, 0);
+    const sd = byType.find(x=>x.label==='SD') || {value:0};
+    const sdPct = totalDrawings>0 ? Math.round((sd.value/totalDrawings)*100) : 0;
+
+    const zones = Object.keys(zoneProjects);
+    const byZone = zones.map(z=>({
+      label: z,
+      value: pool.filter(t=>t.zone===z).reduce((s,t)=> s+(parseInt(t.numDrawings,10)||0), 0)
+    })).sort((a,b)=>b.value-a.value);
+
+    const byProject = [];
+    zones.forEach(z=>{
+      (zoneProjects[z]||[]).forEach(p=>{
+        const value = pool.filter(t=>t.zone===z && t.project===p).reduce((s,t)=> s+(parseInt(t.numDrawings,10)||0), 0);
+        if(value>0) byProject.push({label:`${z} · ${p}`, value});
+      });
+    });
+    byProject.sort((a,b)=>b.value-a.value);
+
+    el.innerHTML = `
+      <div class="dash-card">
+        <h3>Overview</h3>
+        <div class="dash-stats-row">
+          <div class="dash-stat"><div class="num">${pool.length}</div><div class="lbl">Tasks delivered</div></div>
+          <div class="dash-stat"><div class="num">${totalDrawings}</div><div class="lbl">Total drawings</div></div>
+          <div class="dash-stat"><div class="num">${sd.value}</div><div class="lbl">SD drawings</div></div>
+          <div class="dash-stat"><div class="num">${sdPct}%</div><div class="lbl">SD share of total</div></div>
+        </div>
+      </div>
+      <div class="dash-card">
+        <h3>Drawings by Task Type</h3>
+        ${renderDonutChart(byType, totalDrawings, 'drawings')}
+      </div>
+      <div class="dash-card">
+        <h3>Drawings by Zone</h3>
+        ${renderBarChart(byZone)}
+      </div>
+      <div class="dash-card">
+        <h3>Drawings by Project</h3>
+        ${renderBarChart(byProject)}
+      </div>
+    `;
   }
 
   // ---------- LOG TAB (productivity + project progress) ----------
