@@ -1652,7 +1652,8 @@
   // Pure client-side visuals over data already loaded for the board/Log tab
   // — no new API calls, so opening this tab adds no extra load either.
   const CHART_COLORS = ['#E2892B','#3E7C74','#7C6AA6','#C4574B','#4C7EA8','#8A9A3B','#D9A441','#5C8A99'];
-  let prodDashFilters = { zone:'', project:'', sheetFormat:'', taskType:'', engineer:'' };
+  let prodDashFilters = { zone:'', project:'', sheetFormat:'', taskType:'', engineer:'', month:'' };
+  let prodDashChartType = 'donut'; // 'donut' | 'pie' | 'column' | 'bar'
 
   function prodDashPool(){
     return doneTasksPool().filter(t=>{
@@ -1661,6 +1662,7 @@
       if(prodDashFilters.sheetFormat && t.sheetFormat!==prodDashFilters.sheetFormat) return false;
       if(prodDashFilters.taskType && t.taskType!==prodDashFilters.taskType) return false;
       if(prodDashFilters.engineer && t.assignee!==prodDashFilters.engineer) return false;
+      if(prodDashFilters.month && (t.completedAt||'').slice(0,7)!==prodDashFilters.month) return false;
       return true;
     });
   }
@@ -1678,23 +1680,58 @@
     return `conic-gradient(${stops})`;
   }
 
-  function renderDonutChart(segments, total, centerLabel){
+  function renderDonutChart(segments, total, centerLabel, shape){
     const gradient = buildConicGradient(segments);
     const legend = segments.filter(s=>s.value>0).map(s=>{
       const pct = total>0 ? Math.round((s.value/total)*100) : 0;
       return `<div class="legend-row"><span class="legend-swatch" style="background:${s.color};"></span><span class="legend-label">${escapeHtml(s.label)}</span><span class="legend-val">${s.value} (${pct}%)</span></div>`;
     }).join('');
-    return `
-      <div class="donut-wrap">
-        <div class="donut" style="background:${gradient};">
+    const holeHtml = shape==='pie' ? '' : `
           <div class="donut-hole">
             <div class="donut-center-num">${total}</div>
             <div class="donut-center-lbl">${escapeHtml(centerLabel||'total')}</div>
-          </div>
-        </div>
+          </div>`;
+    return `
+      <div class="donut-wrap">
+        <div class="donut" style="background:${gradient};">${holeHtml}</div>
         <div class="donut-legend">${legend || '<div class="notif-empty">No drawings recorded yet.</div>'}</div>
       </div>
     `;
+  }
+
+  function renderColumnChart(segments){
+    const items = segments.filter(s=>s.value>0);
+    if(!items.length) return '<div class="notif-empty">No data yet.</div>';
+    const max = Math.max(1, ...items.map(i=>i.value));
+    const bars = items.map(s=>`
+      <div class="column-bar-wrap">
+        <div class="column-val">${s.value}</div>
+        <div class="column-bar" style="height:${Math.max(2,Math.round((s.value/max)*100))}%;background:${s.color||'var(--teal)'};"></div>
+        <div class="column-label" title="${escapeHtml(s.label)}">${escapeHtml(s.label)}</div>
+      </div>
+    `).join('');
+    return `<div class="column-chart">${bars}</div>`;
+  }
+
+  function renderColoredBarChart(segments){
+    const items = segments.filter(s=>s.value>0);
+    if(!items.length) return '<div class="notif-empty">No data yet.</div>';
+    const max = Math.max(1, ...items.map(i=>i.value));
+    const rows = items.map(i=>`
+      <div class="pbar-row">
+        <div class="pbar-label" title="${escapeHtml(i.label)}"><span class="legend-swatch" style="background:${i.color||'var(--teal)'};margin-right:6px;"></span>${escapeHtml(i.label)}</div>
+        <div class="bar-track" style="width:100%;"><div class="bar-fill" style="width:${Math.round((i.value/max)*100)}%;background:${i.color||'var(--teal)'};"></div></div>
+        <div class="pbar-val">${i.value}</div>
+      </div>
+    `).join('');
+    return `<div class="pbar-chart">${rows}</div>`;
+  }
+
+  function renderTypeChart(byType, totalDrawings){
+    if(prodDashChartType==='pie') return renderDonutChart(byType, totalDrawings, 'drawings', 'pie');
+    if(prodDashChartType==='column') return renderColumnChart(byType);
+    if(prodDashChartType==='bar') return renderColoredBarChart(byType);
+    return renderDonutChart(byType, totalDrawings, 'drawings', 'donut');
   }
 
   function renderBarChart(items){
@@ -1737,6 +1774,8 @@
           <option value="">All engineers</option>
           ${engineerOptions.map(m=>`<option value="${m.id}" ${prodDashFilters.engineer===m.id?'selected':''}>${escapeHtml(m.name)}</option>`).join('')}
         </select>` : ''}
+        <input type="month" id="pdMonthFilter" value="${prodDashFilters.month}" style="padding:6px 8px;border-radius:3px;border:1px solid var(--line-on-ink);background:var(--ink);color:var(--text-on-ink);font-size:12px;">
+        ${prodDashFilters.month ? `<button type="button" class="mini-btn" id="pdClearMonthBtn" style="font-size:11px;padding:5px 10px;">Clear month</button>` : ''}
       </div>
     `;
   }
@@ -1747,11 +1786,15 @@
     const format = document.getElementById('pdFormatFilter');
     const taskType = document.getElementById('pdTaskTypeFilter');
     const engineer = document.getElementById('pdEngineerFilter');
+    const month = document.getElementById('pdMonthFilter');
+    const clearMonth = document.getElementById('pdClearMonthBtn');
     if(zone) zone.addEventListener('change', ()=>{ prodDashFilters.zone=zone.value; prodDashFilters.project=''; renderProductivityDashboard(); });
     if(project) project.addEventListener('change', ()=>{ prodDashFilters.project=project.value; renderProductivityDashboard(); });
     if(format) format.addEventListener('change', ()=>{ prodDashFilters.sheetFormat=format.value; renderProductivityDashboard(); });
     if(taskType) taskType.addEventListener('change', ()=>{ prodDashFilters.taskType=taskType.value; renderProductivityDashboard(); });
     if(engineer) engineer.addEventListener('change', ()=>{ prodDashFilters.engineer=engineer.value; renderProductivityDashboard(); });
+    if(month) month.addEventListener('change', ()=>{ prodDashFilters.month=month.value; renderProductivityDashboard(); });
+    if(clearMonth) clearMonth.addEventListener('click', ()=>{ prodDashFilters.month=''; renderProductivityDashboard(); });
   }
 
   function renderProductivityDashboard(){
@@ -1799,8 +1842,16 @@
         </div>
       </div>
       <div class="dash-card">
-        <h3>Drawings by Task Type</h3>
-        ${renderDonutChart(byType, totalDrawings, 'drawings')}
+        <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:${prodDashChartType?'0':'14px'};">
+          <h3 style="margin:0;">Drawings by Task Type</h3>
+          <select id="pdChartTypeSelect" style="padding:6px 8px;border-radius:3px;border:1px solid var(--line-on-ink);background:var(--ink);color:var(--text-on-ink);font-size:12px;">
+            <option value="donut" ${prodDashChartType==='donut'?'selected':''}>Donut</option>
+            <option value="pie" ${prodDashChartType==='pie'?'selected':''}>Pie</option>
+            <option value="column" ${prodDashChartType==='column'?'selected':''}>Column</option>
+            <option value="bar" ${prodDashChartType==='bar'?'selected':''}>Bar</option>
+          </select>
+        </div>
+        <div style="margin-top:14px;">${renderTypeChart(byType, totalDrawings)}</div>
       </div>
       <div class="dash-card">
         <h3>Drawings by Zone</h3>
@@ -1812,6 +1863,8 @@
       </div>
     `;
     wireProdDashFilters();
+    const chartTypeSelect = document.getElementById('pdChartTypeSelect');
+    if(chartTypeSelect) chartTypeSelect.addEventListener('change', ()=>{ prodDashChartType = chartTypeSelect.value; renderProductivityDashboard(); });
   }
 
   // ---------- LOG TAB (productivity + project progress) ----------
