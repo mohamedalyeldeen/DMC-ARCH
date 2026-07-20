@@ -73,6 +73,14 @@ function canLeadAssignTo(user, assigneeId, membersCache) {
 }
 
 function sendErr(res, e) {
+  // A write to a tab that doesn't exist yet in the Google Sheet (e.g. someone
+  // upgraded the server code but hasn't added the new tab) surfaces as a raw
+  // Google API error, not one of our own thrown Error messages — catch that
+  // pattern here so the person gets an actionable message instead of the
+  // generic 500 fallback below.
+  if (e.tabName) {
+    return res.status(400).json({ error: `Your Google Sheet doesn't have a tab named exactly "${e.tabName}" yet. Add it (spelled exactly like that, case-sensitive) and try again — see the README.` });
+  }
   const map = { NOT_FOUND: 404, FORBIDDEN: 403, USERNAME_TAKEN: 409, BAD_REQUEST: 400, OVERLAP: 409, WEEKEND_DATE: 400 };
   const status = map[e.message] || 500;
   const messages = {
@@ -95,6 +103,23 @@ function assertWorkingDates(...dates) {
   dates.filter(Boolean).forEach(d => {
     if (scheduler.isNonWorkingDay(d)) throw new Error('WEEKEND_DATE');
   });
+}
+
+// Wraps updateTab so a write to a tab that doesn't exist yet in the Google
+// Sheet (e.g. WorkDays/ProjectTargets before someone's added them) throws
+// an error tagged with the tab name, instead of a raw, unreadable Google
+// API error — sendErr() turns that into an actionable message.
+async function updateTabSafe(tab, fn) {
+  try {
+    return await updateTab(tab, fn);
+  } catch (e) {
+    if (/Unable to parse range|Requested entity was not found|Invalid range/i.test(e.message || '')) {
+      const err = new Error('SHEET_TAB_MISSING');
+      err.tabName = tab;
+      throw err;
+    }
+    throw e;
+  }
 }
 
 async function notifyAssignment(task, actor) {
@@ -329,7 +354,7 @@ app.post('/api/workdays', requireAuth, requireOwner, async (req, res) => {
     if (!memberId || !month) throw new Error('BAD_REQUEST');
     const days = Math.max(0, parseInt(req.body.days, 10) || 0);
     let saved;
-    await updateTab('WorkDays', rows => {
+    await updateTabSafe('WorkDays', rows => {
       let row = rows.find(r => r.memberId === memberId && r.month === month);
       if (row) { row.days = days; } else { row = { id: genId('wd'), memberId, month, days }; rows.push(row); }
       saved = row;
@@ -357,7 +382,7 @@ app.post('/api/project-targets', requireAuth, requireOwner, async (req, res) => 
     if (!ZONE_PROJECTS[zone] || !ZONE_PROJECTS[zone].includes(project)) throw new Error('BAD_REQUEST');
     const targetDrawings = Math.max(0, parseInt(req.body.targetDrawings, 10) || 0);
     let saved;
-    await updateTab('ProjectTargets', rows => {
+    await updateTabSafe('ProjectTargets', rows => {
       let row = rows.find(r => r.zone === zone && r.project === project);
       if (row) { row.targetDrawings = targetDrawings; } else { row = { id: genId('pt'), zone, project, targetDrawings }; rows.push(row); }
       saved = row;
