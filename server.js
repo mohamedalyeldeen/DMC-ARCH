@@ -35,6 +35,21 @@ function validateTaskCategorization(zone, project, taskType) {
   if (!TASK_TYPES.includes(taskType)) throw new Error('BAD_REQUEST');
 }
 
+// Shop-drawing metadata used by the Log tab (productivity + project
+// progress). All three are optional so existing tasks created before this
+// feature just show blank/zero for them rather than breaking.
+const SHEET_FORMATS = ['CAD', 'BIM'];
+function normalizeSheetFormat(sf) {
+  if (sf === undefined || sf === null || sf === '') return '';
+  if (!SHEET_FORMATS.includes(sf)) throw new Error('BAD_REQUEST');
+  return sf;
+}
+function normalizeNumDrawings(n) {
+  if (n === undefined || n === null || n === '') return 0;
+  const v = parseInt(n, 10);
+  return (isNaN(v) || v < 0) ? 0 : v;
+}
+
 // The display "title" everywhere else in the app (board cards, Gantt bars,
 // notifications, achievements, dashboard, search) stays a single string —
 // this composes it from the four structured fields so none of that other
@@ -285,6 +300,73 @@ app.get('/api/capacity', requireAuth, async (req, res) => {
   } catch (e) { sendErr(res, e); }
 });
 
+// ---------- WORK DAYS (productivity) ----------
+// Owner-only entry of monthly attendance per engineer. Read access is
+// scoped the same way as everywhere else — a team leader only sees their
+// own reports' entries, a plain member only sees their own — so the Log
+// tab's productivity ranking never leaks data across teams.
+app.get('/api/workdays', requireAuth, async (req, res) => {
+  try {
+    const rowsAll = await readTab('WorkDays').catch(() => []);
+    let rows = rowsAll;
+    if (req.user.role === 'member' && !req.user.isViewer) {
+      if (req.user.isTeamLead) {
+        const members = await readTab('Members');
+        const myIds = new Set(members.filter(m => m.reportsTo === req.user.id).map(m => m.id));
+        myIds.add(req.user.id);
+        rows = rowsAll.filter(r => myIds.has(r.memberId));
+      } else {
+        rows = rowsAll.filter(r => r.memberId === req.user.id);
+      }
+    }
+    res.json({ workdays: rows });
+  } catch (e) { sendErr(res, e); }
+});
+
+app.post('/api/workdays', requireAuth, requireOwner, async (req, res) => {
+  try {
+    const { memberId, month } = req.body;
+    if (!memberId || !month) throw new Error('BAD_REQUEST');
+    const days = Math.max(0, parseInt(req.body.days, 10) || 0);
+    let saved;
+    await updateTab('WorkDays', rows => {
+      let row = rows.find(r => r.memberId === memberId && r.month === month);
+      if (row) { row.days = days; } else { row = { id: genId('wd'), memberId, month, days }; rows.push(row); }
+      saved = row;
+      return rows;
+    });
+    res.json(saved);
+  } catch (e) { sendErr(res, e); }
+});
+
+// ---------- PROJECT TARGETS (progress) ----------
+// Owner-only entry of the total drawings expected for a project. Readable
+// by anyone (it's not sensitive, and members benefit from seeing overall
+// project progress) — only the write is restricted.
+app.get('/api/project-targets', requireAuth, async (req, res) => {
+  try {
+    const rows = await readTab('ProjectTargets').catch(() => []);
+    res.json({ targets: rows });
+  } catch (e) { sendErr(res, e); }
+});
+
+app.post('/api/project-targets', requireAuth, requireOwner, async (req, res) => {
+  try {
+    const { zone, project } = req.body;
+    if (!zone || !project) throw new Error('BAD_REQUEST');
+    if (!ZONE_PROJECTS[zone] || !ZONE_PROJECTS[zone].includes(project)) throw new Error('BAD_REQUEST');
+    const targetDrawings = Math.max(0, parseInt(req.body.targetDrawings, 10) || 0);
+    let saved;
+    await updateTab('ProjectTargets', rows => {
+      let row = rows.find(r => r.zone === zone && r.project === project);
+      if (row) { row.targetDrawings = targetDrawings; } else { row = { id: genId('pt'), zone, project, targetDrawings }; rows.push(row); }
+      saved = row;
+      return rows;
+    });
+    res.json(saved);
+  } catch (e) { sendErr(res, e); }
+});
+
 app.get('/api/state', requireAuth, async (req, res) => {
   try {
     const [teamsAll, membersRaw, tasksAll] = await Promise.all([readTab('Teams'), readTab('Members'), readTab('Tasks')]);
@@ -479,6 +561,9 @@ app.post('/api/tasks', requireAuth, requireLeader, async (req, res) => {
     const bodyStart = req.body.startDate;
     const bodyEnd = req.body.endDate;
     validateTaskCategorization(zone, project, taskType);
+    const numDrawings = normalizeNumDrawings(req.body.numDrawings);
+    const revisionNo = (req.body.revisionNo || '').trim();
+    const sheetFormat = normalizeSheetFormat(req.body.sheetFormat);
     const title = composeTaskTitle({ zone, project, building, taskType });
     if (req.user.role !== 'owner') {
       if (!assignee) throw new Error('FORBIDDEN');
@@ -510,6 +595,7 @@ app.post('/api/tasks', requireAuth, requireLeader, async (req, res) => {
         priority: priority || 'M', due: endDate || '', status: 'todo', completedAt: '',
         startDate, endDate, sequence,
         zone, project, building: building || '', taskType,
+        numDrawings, revisionNo, sheetFormat,
         history: [{ status: 'todo', at: today() }], createdAt: today()
       };
       rows.push(newTask);
@@ -528,6 +614,9 @@ app.put('/api/tasks/:id', requireAuth, requireLeader, async (req, res) => {
     const { zone, project, building, taskType, description, assignee, priority, allowOverlap } = req.body;
     const bodyStart = req.body.startDate;
     const bodyEnd = req.body.endDate;
+    const numDrawings = req.body.numDrawings !== undefined ? normalizeNumDrawings(req.body.numDrawings) : undefined;
+    const revisionNo = req.body.revisionNo !== undefined ? (req.body.revisionNo || '').trim() : undefined;
+    const sheetFormat = req.body.sheetFormat !== undefined ? normalizeSheetFormat(req.body.sheetFormat) : undefined;
     let membersCache = null;
     if (req.user.role !== 'owner') membersCache = await readTab('Members');
     let updated;
@@ -581,6 +670,9 @@ app.put('/api/tasks/:id', requireAuth, requireLeader, async (req, res) => {
       t.endDate = newEnd || '';
       if (newEnd) t.due = newEnd; // keep legacy due date untouched if this task still has no dates
       if (priority) t.priority = priority;
+      if (numDrawings !== undefined) t.numDrawings = numDrawings;
+      if (revisionNo !== undefined) t.revisionNo = revisionNo;
+      if (sheetFormat !== undefined) t.sheetFormat = sheetFormat;
 
       if (newAssignee !== prevAssignee) {
         t.sequence = newAssignee ? scheduler.nextSequence(rows, newAssignee) : 0;
@@ -646,7 +738,8 @@ app.post('/api/tasks/restore', requireAuth, requireLeader, async (req, res) => {
         status: snapshot.status || 'todo', completedAt: snapshot.completedAt || '',
         startDate: snapshot.startDate || '', endDate: snapshot.endDate || '',
         sequence: snapshot.sequence || 0, history: snapshot.history || [], createdAt: snapshot.createdAt || today(),
-        zone: snapshot.zone || '', project: snapshot.project || '', building: snapshot.building || '', taskType: snapshot.taskType || ''
+        zone: snapshot.zone || '', project: snapshot.project || '', building: snapshot.building || '', taskType: snapshot.taskType || '',
+        numDrawings: snapshot.numDrawings || 0, revisionNo: snapshot.revisionNo || '', sheetFormat: snapshot.sheetFormat || ''
       };
       if (restoredTask.assignee) {
         scheduler.restoreRemovedTask(rows, restoredTask.assignee, restoredTask);
@@ -693,7 +786,8 @@ app.post('/api/tasks/:id/duplicate', requireAuth, requireLeader, async (req, res
           status: 'todo', completedAt: '', startDate, endDate,
           sequence: assigneeId ? scheduler.nextSequence(rows, assigneeId) : 0,
           history: [{ status: 'todo', at: today() }], createdAt: today(),
-          zone: original.zone || '', project: original.project || '', building: original.building || '', taskType: original.taskType || ''
+          zone: original.zone || '', project: original.project || '', building: original.building || '', taskType: original.taskType || '',
+          numDrawings: original.numDrawings || 0, revisionNo: original.revisionNo || '', sheetFormat: original.sheetFormat || ''
         };
         rows.push(dup);
         created.push(dup);
