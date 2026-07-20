@@ -1652,6 +1652,18 @@
   // Pure client-side visuals over data already loaded for the board/Log tab
   // — no new API calls, so opening this tab adds no extra load either.
   const CHART_COLORS = ['#E2892B','#3E7C74','#7C6AA6','#C4574B','#4C7EA8','#8A9A3B','#D9A441','#5C8A99'];
+  let prodDashFilters = { zone:'', project:'', sheetFormat:'', taskType:'', engineer:'' };
+
+  function prodDashPool(){
+    return doneTasksPool().filter(t=>{
+      if(prodDashFilters.zone && t.zone!==prodDashFilters.zone) return false;
+      if(prodDashFilters.project && t.project!==prodDashFilters.project) return false;
+      if(prodDashFilters.sheetFormat && t.sheetFormat!==prodDashFilters.sheetFormat) return false;
+      if(prodDashFilters.taskType && t.taskType!==prodDashFilters.taskType) return false;
+      if(prodDashFilters.engineer && t.assignee!==prodDashFilters.engineer) return false;
+      return true;
+    });
+  }
 
   function buildConicGradient(segments){
     const total = segments.reduce((s,x)=>s+x.value,0);
@@ -1697,9 +1709,54 @@
     return `<div class="pbar-chart">${rows || '<div class="notif-empty">No data yet.</div>'}</div>`;
   }
 
+  function renderProdDashFilters(){
+    const taskTypes = (state.taxonomy && state.taxonomy.taskTypes) || [];
+    const zones = Object.keys((state.taxonomy && state.taxonomy.zoneProjects) || {});
+    const engineerOptions = isLeaderLike() ? productivityVisibleMembers() : [];
+    return `
+      <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px;">
+        <select id="pdZoneFilter" style="padding:6px 8px;border-radius:3px;border:1px solid var(--line-on-ink);background:var(--ink);color:var(--text-on-ink);font-size:12px;">
+          <option value="">All zones</option>
+          ${zones.map(z=>`<option value="${escapeHtml(z)}" ${prodDashFilters.zone===z?'selected':''}>${escapeHtml(z)}</option>`).join('')}
+        </select>
+        <select id="pdProjectFilter" ${prodDashFilters.zone?'':'disabled'} style="padding:6px 8px;border-radius:3px;border:1px solid var(--line-on-ink);background:var(--ink);color:var(--text-on-ink);font-size:12px;">
+          <option value="">${prodDashFilters.zone?'All projects':'Select a zone first…'}</option>
+          ${prodDashFilters.zone ? (state.taxonomy.zoneProjects[prodDashFilters.zone]||[]).map(p=>`<option value="${escapeHtml(p)}" ${prodDashFilters.project===p?'selected':''}>${escapeHtml(p)}</option>`).join('') : ''}
+        </select>
+        <select id="pdFormatFilter" style="padding:6px 8px;border-radius:3px;border:1px solid var(--line-on-ink);background:var(--ink);color:var(--text-on-ink);font-size:12px;">
+          <option value="">All formats</option>
+          <option value="CAD" ${prodDashFilters.sheetFormat==='CAD'?'selected':''}>CAD</option>
+          <option value="BIM" ${prodDashFilters.sheetFormat==='BIM'?'selected':''}>BIM</option>
+        </select>
+        <select id="pdTaskTypeFilter" style="padding:6px 8px;border-radius:3px;border:1px solid var(--line-on-ink);background:var(--ink);color:var(--text-on-ink);font-size:12px;">
+          <option value="">All task titles</option>
+          ${taskTypes.map(tt=>`<option value="${escapeHtml(tt)}" ${prodDashFilters.taskType===tt?'selected':''}>${escapeHtml(tt)}</option>`).join('')}
+        </select>
+        ${isLeaderLike() ? `
+        <select id="pdEngineerFilter" style="padding:6px 8px;border-radius:3px;border:1px solid var(--line-on-ink);background:var(--ink);color:var(--text-on-ink);font-size:12px;">
+          <option value="">All engineers</option>
+          ${engineerOptions.map(m=>`<option value="${m.id}" ${prodDashFilters.engineer===m.id?'selected':''}>${escapeHtml(m.name)}</option>`).join('')}
+        </select>` : ''}
+      </div>
+    `;
+  }
+
+  function wireProdDashFilters(){
+    const zone = document.getElementById('pdZoneFilter');
+    const project = document.getElementById('pdProjectFilter');
+    const format = document.getElementById('pdFormatFilter');
+    const taskType = document.getElementById('pdTaskTypeFilter');
+    const engineer = document.getElementById('pdEngineerFilter');
+    if(zone) zone.addEventListener('change', ()=>{ prodDashFilters.zone=zone.value; prodDashFilters.project=''; renderProductivityDashboard(); });
+    if(project) project.addEventListener('change', ()=>{ prodDashFilters.project=project.value; renderProductivityDashboard(); });
+    if(format) format.addEventListener('change', ()=>{ prodDashFilters.sheetFormat=format.value; renderProductivityDashboard(); });
+    if(taskType) taskType.addEventListener('change', ()=>{ prodDashFilters.taskType=taskType.value; renderProductivityDashboard(); });
+    if(engineer) engineer.addEventListener('change', ()=>{ prodDashFilters.engineer=engineer.value; renderProductivityDashboard(); });
+  }
+
   function renderProductivityDashboard(){
     const el = document.getElementById('prodDashboardView');
-    const pool = doneTasksPool();
+    const pool = prodDashPool();
     const taskTypes = (state.taxonomy && state.taxonomy.taskTypes) || [];
     const zoneProjects = (state.taxonomy && state.taxonomy.zoneProjects) || {};
 
@@ -1729,6 +1786,10 @@
 
     el.innerHTML = `
       <div class="dash-card">
+        <h3>Filters</h3>
+        ${renderProdDashFilters()}
+      </div>
+      <div class="dash-card">
         <h3>Overview</h3>
         <div class="dash-stats-row">
           <div class="dash-stat"><div class="num">${pool.length}</div><div class="lbl">Tasks delivered</div></div>
@@ -1750,6 +1811,7 @@
         ${renderBarChart(byProject)}
       </div>
     `;
+    wireProdDashFilters();
   }
 
   // ---------- LOG TAB (productivity + project progress) ----------
