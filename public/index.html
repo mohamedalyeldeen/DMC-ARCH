@@ -60,6 +60,7 @@
         <button class="tab-btn active" id="tabBoardBtn">Board</button>
         <button class="tab-btn" id="tabGanttBtn">Gantt</button>
         <button class="tab-btn" id="tabDashBtn">Dashboard</button>
+        <button class="tab-btn" id="tabLogBtn">Log</button>
         <button class="tab-btn" id="tabCapacityBtn" style="display:none;">Capacity</button>
       </div>
       <h1 id="viewTitle">This Week's Jobs</h1>
@@ -80,6 +81,7 @@
     <div class="board" id="board"></div>
     <div class="gantt-wrap" id="ganttView" style="display:none;"></div>
     <div class="dash-wrap" id="dashboardView" style="display:none;"></div>
+    <div class="dash-wrap" id="logView" style="display:none;"></div>
     <div class="dash-wrap" id="capacityView" style="display:none;"></div>
   </main>
 </div>
@@ -104,6 +106,20 @@
         </div>
       </div>
       <div class="field-error" id="taskFieldsError">Zone, project, and task title are all required.</div>
+      <div class="field-row">
+        <div class="field"><label>No. of Drawings</label><input type="number" id="fNumDrawings" min="0" placeholder="0"></div>
+        <div class="field"><label>Revision No.</label><input type="text" id="fRevisionNo" maxlength="20" placeholder="e.g. R2"></div>
+      </div>
+      <div class="field-row">
+        <div class="field"><label>Sheet Format</label>
+          <select id="fSheetFormat">
+            <option value="">— Not set —</option>
+            <option value="CAD">CAD</option>
+            <option value="BIM">BIM</option>
+          </select>
+        </div>
+        <div class="field"></div>
+      </div>
       <div class="field"><label>Details</label><textarea id="fDesc" maxlength="400" placeholder="What needs to get done…"></textarea></div>
       <div class="field-row">
         <div class="field"><label>Assign to</label><select id="fAssignee"></select></div>

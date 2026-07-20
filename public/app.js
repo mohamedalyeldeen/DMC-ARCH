@@ -286,6 +286,7 @@
     document.getElementById('board').style.display='none';
     document.getElementById('ganttView').style.display='none';
     document.getElementById('dashboardView').style.display='none';
+    document.getElementById('logView').style.display='none';
     document.getElementById('capacityView').style.display='none';
     if(activeTab==='board'){
       document.getElementById('viewTitle').textContent = isLeaderLike() ? "This Week's Jobs" : 'My Tasks';
@@ -302,6 +303,11 @@
       document.getElementById('dashboardView').style.display='block';
       document.getElementById('newTaskBtn').style.display='none';
       renderDashboard();
+    } else if(activeTab==='log'){
+      document.getElementById('viewTitle').textContent = 'Productivity Log';
+      document.getElementById('logView').style.display='block';
+      document.getElementById('newTaskBtn').style.display='none';
+      loadAndRenderLog();
     } else {
       document.getElementById('viewTitle').textContent = 'Capacity';
       document.getElementById('capacityView').style.display='block';
@@ -394,7 +400,7 @@
     catch(e){ alert(e.message); }
   });
 
-  const ALL_TAB_BTNS = ['tabBoardBtn','tabGanttBtn','tabDashBtn','tabCapacityBtn'];
+  const ALL_TAB_BTNS = ['tabBoardBtn','tabGanttBtn','tabDashBtn','tabLogBtn','tabCapacityBtn'];
   function activateTab(name, btnId){
     activeTab = name;
     ALL_TAB_BTNS.forEach(id=> document.getElementById(id).classList.toggle('active', id===btnId));
@@ -403,6 +409,7 @@
   document.getElementById('tabBoardBtn').addEventListener('click', ()=> activateTab('board','tabBoardBtn'));
   document.getElementById('tabGanttBtn').addEventListener('click', ()=> activateTab('gantt','tabGanttBtn'));
   document.getElementById('tabDashBtn').addEventListener('click', ()=> activateTab('dashboard','tabDashBtn'));
+  document.getElementById('tabLogBtn').addEventListener('click', ()=> activateTab('log','tabLogBtn'));
   document.getElementById('tabCapacityBtn').addEventListener('click', ()=> activateTab('capacity','tabCapacityBtn'));
 
   function renderStats(){
@@ -950,6 +957,9 @@
       populateProjectOptions(t.zone || '', t.project || '');
       document.getElementById('fBuilding').value = t.building || '';
       document.getElementById('fTaskType').value = t.taskType || '';
+      document.getElementById('fNumDrawings').value = t.numDrawings || '';
+      document.getElementById('fRevisionNo').value = t.revisionNo || '';
+      document.getElementById('fSheetFormat').value = t.sheetFormat || '';
       document.getElementById('fDesc').value=t.description||'';
       fillAssigneeOptions(t.assignee);
       document.getElementById('fPriority').value=t.priority;
@@ -967,6 +977,9 @@
       populateProjectOptions('', '');
       document.getElementById('fBuilding').value = '';
       document.getElementById('fTaskType').value = '';
+      document.getElementById('fNumDrawings').value = '';
+      document.getElementById('fRevisionNo').value = '';
+      document.getElementById('fSheetFormat').value = '';
       fillAssigneeOptions('');
       document.getElementById('fPriority').value='M';
       document.getElementById('fStartDate').value='';
@@ -1003,6 +1016,9 @@
     const description = document.getElementById('fDesc').value.trim();
     const assignee = document.getElementById('fAssignee').value || '';
     const priority = document.getElementById('fPriority').value;
+    const numDrawings = document.getElementById('fNumDrawings').value;
+    const revisionNo = document.getElementById('fRevisionNo').value.trim();
+    const sheetFormat = document.getElementById('fSheetFormat').value;
     const isAuto = document.getElementById('fAutoSchedule').checked && !id;
     if(!validateManualDates()) return;
     try{
@@ -1011,10 +1027,12 @@
         const beforeSnapshot = prevTask ? {
           zone: prevTask.zone, project: prevTask.project, building: prevTask.building, taskType: prevTask.taskType,
           description: prevTask.description, assignee: prevTask.assignee,
-          priority: prevTask.priority, startDate: prevTask.startDate, endDate: prevTask.endDate
+          priority: prevTask.priority, startDate: prevTask.startDate, endDate: prevTask.endDate,
+          numDrawings: prevTask.numDrawings, revisionNo: prevTask.revisionNo, sheetFormat: prevTask.sheetFormat
         } : null;
         await api('PUT', '/api/tasks/'+id, {
           zone, project, building, taskType, description, assignee, priority,
+          numDrawings, revisionNo, sheetFormat,
           startDate: document.getElementById('fStartDate').value || '',
           endDate: document.getElementById('fEndDate').value || '',
           allowOverlap: document.getElementById('fAllowOverlap').checked
@@ -1027,6 +1045,7 @@
       } else if(isAuto){
         const created = await api('POST', '/api/tasks', {
           zone, project, building, taskType, description, assignee, priority,
+          numDrawings, revisionNo, sheetFormat,
           mode: 'auto',
           durationDays: parseInt(document.getElementById('fDuration').value,10) || 1,
           insertAfterTaskId: document.getElementById('fInsertAfter').value || null
@@ -1035,6 +1054,7 @@
       } else {
         const created = await api('POST', '/api/tasks', {
           zone, project, building, taskType, description, assignee, priority,
+          numDrawings, revisionNo, sheetFormat,
           startDate: document.getElementById('fStartDate').value || '',
           endDate: document.getElementById('fEndDate').value || '',
           allowOverlap: document.getElementById('fAllowOverlap').checked
@@ -1619,6 +1639,236 @@
     `;
     document.getElementById('sortByAvailBtn').addEventListener('click', ()=>{ capacitySortMode='availability'; renderCapacityList(); });
     document.getElementById('sortByCapBtn').addEventListener('click', ()=>{ capacitySortMode='capacity'; renderCapacityList(); });
+  }
+
+  // ---------- LOG TAB (productivity + project progress) ----------
+  // Fetched lazily, only while this tab is open — same pattern as Capacity —
+  // so it adds no load to the regular board polling. WorkDays/ProjectTargets
+  // are owner-entered and small, so re-fetching them on each ~8s poll while
+  // the tab is open is cheap; the completed-tasks log itself reuses
+  // state.dashboardTasks (already fetched for the Dashboard tab) instead of
+  // hitting the sheet again.
+  let logLoaded = false;
+  let logWorkdays = [];
+  let logTargets = [];
+  let logFilters = { engineer:'', zone:'', project:'', from:'', to:'' };
+  let logMonth = (()=>{ const d=new Date(); return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0'); })();
+
+  async function loadAndRenderLog(){
+    const el = document.getElementById('logView');
+    if(!logLoaded) el.innerHTML = '<div class="notif-empty">Loading…</div>';
+    try{
+      const [wd, pt] = await Promise.all([ api('GET','/api/workdays'), api('GET','/api/project-targets') ]);
+      logWorkdays = wd.workdays || [];
+      logTargets = pt.targets || [];
+      logLoaded = true;
+      renderLogView();
+    }catch(e){
+      if(!logLoaded) el.innerHTML = `<div class="notif-empty">${escapeHtml(e.message)}</div>`;
+    }
+  }
+
+  function doneTasksPool(){ return (state.dashboardTasks || state.tasks).filter(t=>t.status==='done'); }
+
+  function filteredLogRows(){
+    return doneTasksPool().filter(t=>{
+      if(logFilters.engineer && t.assignee!==logFilters.engineer) return false;
+      if(logFilters.zone && t.zone!==logFilters.zone) return false;
+      if(logFilters.project && t.project!==logFilters.project) return false;
+      if(logFilters.from && t.completedAt < logFilters.from) return false;
+      if(logFilters.to && t.completedAt > logFilters.to) return false;
+      return true;
+    }).sort((a,b)=> (b.completedAt||'').localeCompare(a.completedAt||''));
+  }
+
+  function renderLogTable(){
+    const rows = filteredLogRows();
+    const zones = Object.keys((state.taxonomy && state.taxonomy.zoneProjects) || {});
+    const filterRow = isLeaderLike() ? `
+      <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px;">
+        <select id="logEngineerFilter" style="padding:6px 8px;border-radius:3px;border:1px solid var(--line-on-ink);background:var(--ink);color:var(--text-on-ink);font-size:12px;">
+          <option value="">All engineers</option>
+          ${productivityVisibleMembers().map(m=>`<option value="${m.id}" ${logFilters.engineer===m.id?'selected':''}>${escapeHtml(m.name)}</option>`).join('')}
+        </select>
+        <select id="logZoneFilter" style="padding:6px 8px;border-radius:3px;border:1px solid var(--line-on-ink);background:var(--ink);color:var(--text-on-ink);font-size:12px;">
+          <option value="">All zones</option>
+          ${zones.map(z=>`<option value="${escapeHtml(z)}" ${logFilters.zone===z?'selected':''}>${escapeHtml(z)}</option>`).join('')}
+        </select>
+        <select id="logProjectFilter" ${logFilters.zone?'':'disabled'} style="padding:6px 8px;border-radius:3px;border:1px solid var(--line-on-ink);background:var(--ink);color:var(--text-on-ink);font-size:12px;">
+          <option value="">${logFilters.zone?'All projects':'Select a zone first…'}</option>
+          ${logFilters.zone ? (state.taxonomy.zoneProjects[logFilters.zone]||[]).map(p=>`<option value="${escapeHtml(p)}" ${logFilters.project===p?'selected':''}>${escapeHtml(p)}</option>`).join('') : ''}
+        </select>
+        <input type="date" id="logFromDate" value="${logFilters.from}" style="padding:6px 8px;border-radius:3px;border:1px solid var(--line-on-ink);background:var(--ink);color:var(--text-on-ink);font-size:12px;">
+        <input type="date" id="logToDate" value="${logFilters.to}" style="padding:6px 8px;border-radius:3px;border:1px solid var(--line-on-ink);background:var(--ink);color:var(--text-on-ink);font-size:12px;">
+      </div>
+    ` : `
+      <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px;">
+        <input type="date" id="logFromDate" value="${logFilters.from}" style="padding:6px 8px;border-radius:3px;border:1px solid var(--line-on-ink);background:var(--ink);color:var(--text-on-ink);font-size:12px;">
+        <input type="date" id="logToDate" value="${logFilters.to}" style="padding:6px 8px;border-radius:3px;border:1px solid var(--line-on-ink);background:var(--ink);color:var(--text-on-ink);font-size:12px;">
+      </div>
+    `;
+    const tableRows = rows.map(t=>{
+      const m = memberById(t.assignee);
+      return `<tr>
+        <td>${fmtDate(t.completedAt)}</td>
+        <td>${escapeHtml(m?m.name:'—')}</td>
+        <td>${escapeHtml(t.zone||'—')}</td>
+        <td>${escapeHtml(t.project||'—')}</td>
+        <td>${escapeHtml(t.building||'—')}</td>
+        <td>${escapeHtml(t.taskType||'—')}</td>
+        <td>${t.numDrawings||0}</td>
+        <td>${escapeHtml(t.revisionNo||'—')}</td>
+        <td>${escapeHtml(t.sheetFormat||'—')}</td>
+      </tr>`;
+    }).join('');
+    return `
+      <div class="dash-card">
+        <h3>Completed Tasks Log (${rows.length})</h3>
+        ${filterRow}
+        <div style="overflow-x:auto;">
+          <table class="dash-table">
+            <thead><tr><th>Completed</th><th>Engineer</th><th>Zone</th><th>Project</th><th>Building</th><th>Task Type</th><th>Drawings</th><th>Rev.</th><th>Format</th></tr></thead>
+            <tbody>${tableRows || '<tr><td colspan="9">No completed tasks match these filters.</td></tr>'}</tbody>
+          </table>
+        </div>
+      </div>
+    `;
+  }
+
+  // Owner/viewer see everyone; a team leader sees their own team; a plain
+  // member sees just themselves — same scoping rule used elsewhere.
+  function productivityVisibleMembers(){
+    if(isOwner() || isViewer()) return state.members.filter(m=>!m.isViewer);
+    if(isTeamLead()) return state.members.filter(m=> !m.isViewer && (m.reportsTo===session.id || m.id===session.id));
+    return state.members.filter(m=>m.id===session.id);
+  }
+
+  function computeProductivity(memberId, month){
+    const drawings = doneTasksPool().filter(t=> t.assignee===memberId && (t.completedAt||'').slice(0,7)===month)
+      .reduce((sum,t)=> sum + (parseInt(t.numDrawings,10)||0), 0);
+    const wd = logWorkdays.find(w=>w.memberId===memberId && w.month===month);
+    const days = wd ? (parseInt(wd.days,10)||0) : 0;
+    const rate = days>0 ? Math.round((drawings/days)*100)/100 : null;
+    return {drawings, days, rate};
+  }
+
+  function renderProductivitySection(){
+    const members = productivityVisibleMembers();
+    let rows = members.map(m=> ({member:m, ...computeProductivity(m.id, logMonth)}));
+    rows.sort((a,b)=> (b.rate??-1) - (a.rate??-1));
+    const cardsHtml = rows.map((r,i)=>{
+      const daysField = isOwner()
+        ? `<input type="number" min="0" class="wd-input" data-member="${r.member.id}" value="${r.days}">`
+        : `<span>${r.days}</span>`;
+      return `
+      <div class="prod-card">
+        <div class="prod-rank">#${i+1}</div>
+        <div class="prod-name">${escapeHtml(r.member.name)}</div>
+        <div class="prod-rate">${r.rate!==null ? r.rate : '—'}</div>
+        <div class="prod-rate-lbl">drawings / day</div>
+        <div class="prod-row"><span>Drawings this month</span><span>${r.drawings}</span></div>
+        <div class="prod-row"><span>Work days</span>${daysField}</div>
+      </div>`;
+    }).join('');
+    return `
+      <div class="dash-card">
+        <h3>Engineer Productivity</h3>
+        <div style="margin-bottom:14px;">
+          <input type="month" id="logMonthPicker" value="${logMonth}" style="padding:6px 8px;border-radius:3px;border:1px solid var(--line-on-ink);background:var(--ink);color:var(--text-on-ink);font-size:12px;">
+          ${isOwner() ? '<span style="margin-left:10px;font-size:11px;color:var(--text-dim-on-ink);">Enter each engineer\'s work days for the selected month to compute their rate.</span>' : ''}
+        </div>
+        <div class="prod-grid">${cardsHtml || '<div class="notif-empty">No engineers to show.</div>'}</div>
+      </div>
+    `;
+  }
+
+  function computeProjectProgress(zone, project){
+    const completed = doneTasksPool().filter(t=>t.zone===zone && t.project===project)
+      .reduce((sum,t)=> sum + (parseInt(t.numDrawings,10)||0), 0);
+    const targetRow = logTargets.find(t=>t.zone===zone && t.project===project);
+    const target = targetRow ? (parseInt(targetRow.targetDrawings,10)||0) : 0;
+    const pct = target>0 ? Math.min(100, Math.round((completed/target)*100)) : 0;
+    return {completed, target, pct};
+  }
+
+  function renderProjectProgressSection(){
+    const zoneProjects = (state.taxonomy && state.taxonomy.zoneProjects) || {};
+    const cards = [];
+    Object.keys(zoneProjects).forEach(zone=>{
+      zoneProjects[zone].forEach(project=>{
+        const p = computeProjectProgress(zone, project);
+        if(!isOwner() && p.target===0 && p.completed===0) return; // hide untouched projects for non-owners
+        const targetField = isOwner()
+          ? `<input type="number" min="0" class="target-input" data-zone="${escapeHtml(zone)}" data-project="${escapeHtml(project)}" value="${p.target}">`
+          : `<span>${p.target || '—'}</span>`;
+        cards.push(`
+          <div class="prog-card">
+            <div class="prog-zone">${escapeHtml(zone)}</div>
+            <div class="prog-name">${escapeHtml(project)}</div>
+            <div class="bar-track" style="width:100%;"><div class="bar-fill" style="width:${p.pct}%;"></div></div>
+            <div class="prog-stats" style="margin-top:10px;">
+              <span>${p.completed} done</span>
+              <span>Target: ${targetField}</span>
+              <span>${p.pct}%</span>
+            </div>
+          </div>
+        `);
+      });
+    });
+    return `
+      <div class="dash-card">
+        <h3>Project Progress</h3>
+        <div class="prog-grid">${cards.join('') || '<div class="notif-empty">No projects to show yet.</div>'}</div>
+      </div>
+    `;
+  }
+
+  function wireLogInteractions(){
+    const eng = document.getElementById('logEngineerFilter');
+    const zone = document.getElementById('logZoneFilter');
+    const project = document.getElementById('logProjectFilter');
+    const from = document.getElementById('logFromDate');
+    const to = document.getElementById('logToDate');
+    if(eng) eng.addEventListener('change', ()=>{ logFilters.engineer=eng.value; renderLogView(); });
+    if(zone) zone.addEventListener('change', ()=>{ logFilters.zone=zone.value; logFilters.project=''; renderLogView(); });
+    if(project) project.addEventListener('change', ()=>{ logFilters.project=project.value; renderLogView(); });
+    if(from) from.addEventListener('change', ()=>{ logFilters.from=from.value; renderLogView(); });
+    if(to) to.addEventListener('change', ()=>{ logFilters.to=to.value; renderLogView(); });
+
+    const monthPicker = document.getElementById('logMonthPicker');
+    if(monthPicker) monthPicker.addEventListener('change', ()=>{ logMonth = monthPicker.value; renderLogView(); });
+
+    document.querySelectorAll('.wd-input').forEach(inp=>{
+      inp.addEventListener('change', async ()=>{
+        const memberId = inp.dataset.member;
+        const days = parseInt(inp.value,10)||0;
+        try{
+          await api('POST','/api/workdays',{memberId, month: logMonth, days});
+          const existing = logWorkdays.find(w=>w.memberId===memberId && w.month===logMonth);
+          if(existing) existing.days = days; else logWorkdays.push({memberId, month: logMonth, days});
+          renderLogView();
+        }catch(e){ alert(e.message); }
+      });
+    });
+
+    document.querySelectorAll('.target-input').forEach(inp=>{
+      inp.addEventListener('change', async ()=>{
+        const zoneVal = inp.dataset.zone, projectVal = inp.dataset.project;
+        const targetDrawings = parseInt(inp.value,10)||0;
+        try{
+          await api('POST','/api/project-targets',{zone: zoneVal, project: projectVal, targetDrawings});
+          const existing = logTargets.find(t=>t.zone===zoneVal && t.project===projectVal);
+          if(existing) existing.targetDrawings = targetDrawings; else logTargets.push({zone: zoneVal, project: projectVal, targetDrawings});
+          renderLogView();
+        }catch(e){ alert(e.message); }
+      });
+    });
+  }
+
+  function renderLogView(){
+    const el = document.getElementById('logView');
+    el.innerHTML = renderLogTable() + renderProductivitySection() + renderProjectProgressSection();
+    wireLogInteractions();
   }
 
   function doExport(){
