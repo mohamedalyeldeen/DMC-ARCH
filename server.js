@@ -5,7 +5,7 @@ const bcrypt = require('bcryptjs');
 const crypto = require('crypto');
 const path = require('path');
 const { readTab, updateTab, getConfig, setConfig } = require('./lib/sheets');
-const { sign, requireAuth, requireLeader, requireOwner, isLeader } = require('./lib/auth');
+const { sign, requireAuth, requireLeader, requireOwner, requireAssigner, isLeader, isTeamWide } = require('./lib/auth');
 const { sendMail, taskAssignedEmail } = require('./lib/mailer');
 const scheduler = require('./lib/scheduler');
 const achievements = require('./lib/achievements');
@@ -27,7 +27,7 @@ const ZONE_PROJECTS = {
   'New Cairo': ['Old Lagoon', 'New Lagoon', 'Club District', 'Body', 'Heart Work', 'Aliva', 'MV1 Extension'],
   'North Coast': ['Evia', 'Skala', 'Crete', 'Rhodes', 'Levels']
 };
-const TASK_TYPES = ['Coordination', 'RFI', 'RFP', 'SD', 'Study', 'QS', 'Clean Copy', 'As Built'];
+const TASK_TYPES = ['Coordination', 'Modeling', 'RFI', 'RFP', 'SD', 'Study', 'QS', 'Clean Copy', 'As Built'];
 
 function validateTaskCategorization(zone, project, taskType) {
   if (!zone || !project || !taskType) throw new Error('BAD_REQUEST');
@@ -39,10 +39,16 @@ function validateTaskCategorization(zone, project, taskType) {
 // progress). All three are optional so existing tasks created before this
 // feature just show blank/zero for them rather than breaking.
 const SHEET_FORMATS = ['CAD', 'BIM'];
+const REVISION_NUMBERS = ['Rev.0', 'Rev.1', 'Rev.2', 'Rev.3', 'Rev.4', 'Rev.5'];
 function normalizeSheetFormat(sf) {
   if (sf === undefined || sf === null || sf === '') return '';
   if (!SHEET_FORMATS.includes(sf)) throw new Error('BAD_REQUEST');
   return sf;
+}
+function normalizeRevisionNo(rv) {
+  if (rv === undefined || rv === null || rv === '') return '';
+  if (!REVISION_NUMBERS.includes(rv)) throw new Error('BAD_REQUEST');
+  return rv;
 }
 function normalizeNumDrawings(n) {
   if (n === undefined || n === null || n === '') return 0;
@@ -63,13 +69,36 @@ function composeTaskTitle({ zone, project, building, taskType }) {
 function genId(prefix) { return prefix + crypto.randomBytes(4).toString('hex'); }
 function today() { return new Date().toISOString().slice(0, 10); }
 
-// Owner can assign to anyone. A team lead can assign to their own reports,
-// or to themselves (Phase 2: team leader self-assignment).
+// Only the owner or a team leader can delete a task, move it backward, or
+// approve it forward past "submitted" — never a senior or plain member.
+// A team leader's reach is their own team (by teamId), excluding other team
+// leaders — matches "team leaders can act on themselves or anyone else on
+// the team, but not on each other."
 function canLeadAssignTo(user, assigneeId, membersCache) {
   if (user.role === 'owner') return true;
+  if (!user.isTeamLead) return false;
   if (assigneeId === user.id) return true;
   const target = membersCache.find(m => m.id === assigneeId);
-  return !!(target && target.reportsTo === user.id);
+  return !!(target && target.teamId === user.teamId && !target.isTeamLead);
+}
+
+// Owner, team leader, or senior can create/edit a task's assignment — this
+// is the "who am I allowed to hand this task to" check used by
+// POST/PUT/duplicate on /api/tasks.
+// - Team leader: themself, or anyone else on the team who isn't another
+//   team leader (so: seniors and plain team members).
+// - Senior: themself, or a plain team member on the team — never another
+//   senior, never a team leader.
+// - Plain member / viewer: nobody — no assignment rights at all.
+function canAssignTo(user, assigneeId, membersCache) {
+  if (user.role === 'owner') return true;
+  if (user.isViewer) return false;
+  if (assigneeId === user.id) return !!(user.isTeamLead || user.isSenior);
+  if (!user.isTeamLead && !user.isSenior) return false;
+  const target = membersCache.find(m => m.id === assigneeId);
+  if (!target || target.teamId !== user.teamId) return false;
+  if (user.isTeamLead) return !target.isTeamLead;
+  return !target.isTeamLead && !target.isSenior;
 }
 
 function sendErr(res, e) {
@@ -130,7 +159,7 @@ async function notifyAssignment(task, actor) {
     const assignedBy = actorLabel(actor);
     const { subject, text, html } = taskAssignedEmail({
       memberName: member.name, taskTitle: task.title, description: task.description,
-      priority: task.priority, due: task.due, assignedBy
+      due: task.due, assignedBy
     });
     await sendMail({ to: member.email, subject, text, html });
   } catch (e) {
@@ -283,8 +312,8 @@ app.post('/api/auth/login-member', async (req, res) => {
     if (!m) return res.status(401).json({ error: 'Incorrect username or password.' });
     const ok = await bcrypt.compare(password || '', m.passwordHash);
     if (!ok) return res.status(401).json({ error: 'Incorrect username or password.' });
-    const token = sign({ role: 'member', id: m.id, teamId: m.teamId, isTeamLead: m.isTeamLead, isViewer: m.isViewer, name: m.name });
-    res.json({ token, role: m.isViewer ? 'viewer' : (m.isTeamLead ? 'teamlead' : 'member'), name: m.name, teamId: m.teamId, isTeamLead: m.isTeamLead, isViewer: m.isViewer, id: m.id });
+    const token = sign({ role: 'member', id: m.id, teamId: m.teamId, isTeamLead: m.isTeamLead, isSenior: m.isSenior, isViewer: m.isViewer, name: m.name });
+    res.json({ token, role: m.isViewer ? 'viewer' : (m.isTeamLead ? 'teamlead' : (m.isSenior ? 'senior' : 'member')), name: m.name, teamId: m.teamId, isTeamLead: m.isTeamLead, isSenior: m.isSenior, isViewer: m.isViewer, id: m.id });
   } catch (e) { sendErr(res, e); }
 });
 
@@ -308,16 +337,17 @@ app.post('/api/auth/change-password', requireAuth, async (req, res) => {
 });
 
 // ---------- STATE ----------
-// Capacity is a planning view for whoever assigns work — owner + team leads.
+// Capacity is a planning view for whoever assigns work — owner, team leads,
+// seniors, and viewers (read-only oversight).
 app.get('/api/capacity', requireAuth, async (req, res) => {
   try {
-    if (!isLeader(req.user) && !req.user.isViewer) throw new Error('FORBIDDEN');
+    if (!isTeamWide(req.user)) throw new Error('FORBIDDEN');
     const [membersRaw, tasksAll] = await Promise.all([readTab('Members'), readTab('Tasks')]);
     let visibleMembers = membersRaw;
     if (req.user.role !== 'owner' && !req.user.isViewer) {
-      visibleMembers = membersRaw.filter(m => m.reportsTo === req.user.id || m.id === req.user.id);
+      visibleMembers = membersRaw.filter(m => m.teamId === req.user.teamId);
     }
-    const capacity = visibleMembers.map(m => {
+    const capacity = visibleMembers.filter(m => !m.isViewer).map(m => {
       const c = scheduler.engineerCapacity(tasksAll, m.id);
       return { id: m.id, name: m.name, teamId: m.teamId, ...c };
     });
@@ -335,10 +365,9 @@ app.get('/api/workdays', requireAuth, async (req, res) => {
     const rowsAll = await readTab('WorkDays').catch(() => []);
     let rows = rowsAll;
     if (req.user.role === 'member' && !req.user.isViewer) {
-      if (req.user.isTeamLead) {
+      if (req.user.isTeamLead || req.user.isSenior) {
         const members = await readTab('Members');
-        const myIds = new Set(members.filter(m => m.reportsTo === req.user.id).map(m => m.id));
-        myIds.add(req.user.id);
+        const myIds = new Set(members.filter(m => m.teamId === req.user.teamId && !m.isViewer).map(m => m.id));
         rows = rowsAll.filter(r => myIds.has(r.memberId));
       } else {
         rows = rowsAll.filter(r => r.memberId === req.user.id);
@@ -401,28 +430,29 @@ app.get('/api/state', requireAuth, async (req, res) => {
     } catch (e) {
       console.error('Notifications tab unavailable (has it been created in the Sheet yet?):', e.message);
     }
-    const leader = isLeader(req.user);
     let tasks, dashboardTasks, teams, visibleMembersRaw;
     if (req.user.role === 'owner' || req.user.isViewer) {
       // Viewers are read-only oversight accounts — same full-board
       // visibility as the owner, just with every mutating action blocked
-      // (requireLeader/requireOwner checks, and the move endpoint above).
+      // (requireLeader/requireAssigner/requireOwner checks, and the move
+      // endpoint above). Their own names are filtered out of dashboard-ish
+      // rosters client-side (they never do task work, so they'd just be an
+      // empty, meaningless row there).
       tasks = tasksAll;
       dashboardTasks = tasksAll;
       teams = teamsAll;
       visibleMembersRaw = membersRaw;
-    } else if (req.user.isTeamLead) {
-      // A team leader only sees their own team: their team's roster, and
-      // only tasks assigned within it (including their own self-assigned
-      // tasks). This used to show the entire board — that was a visibility
-      // leak across teams, not an intentional feature.
+    } else if (req.user.isTeamLead || req.user.isSenior) {
+      // Team leaders and seniors both see their whole team (by teamId) —
+      // they need to be able to see and pick teammates when assigning work,
+      // even though a senior's actual assignment rights are narrower (see
+      // canAssignTo in the tasks endpoints below).
       const myTeamId = req.user.teamId;
-      const myReportIds = new Set(membersRaw.filter(m => m.reportsTo === req.user.id).map(m => m.id));
-      myReportIds.add(req.user.id); // Phase 2: team leaders can self-assign, include their own tasks too
-      tasks = tasksAll.filter(t => myReportIds.has(t.assignee));
+      const myTeamIds = new Set(membersRaw.filter(m => m.teamId === myTeamId).map(m => m.id));
+      tasks = tasksAll.filter(t => myTeamIds.has(t.assignee));
       dashboardTasks = tasks;
       teams = teamsAll.filter(t => t.id === myTeamId);
-      visibleMembersRaw = membersRaw.filter(m => m.teamId === myTeamId || myReportIds.has(m.id));
+      visibleMembersRaw = membersRaw.filter(m => m.teamId === myTeamId);
     } else {
       tasks = tasksAll.filter(t => t.assignee === req.user.id);
       dashboardTasks = tasks;
@@ -455,7 +485,7 @@ app.get('/api/state', requireAuth, async (req, res) => {
       }
     }
 
-    res.json({ teams, members, tasks, dashboardTasks, notifications, unreadCount, you: req.user, me, taxonomy: { zoneProjects: ZONE_PROJECTS, taskTypes: TASK_TYPES } });
+    res.json({ teams, members, tasks, dashboardTasks, notifications, unreadCount, you: req.user, me, taxonomy: { zoneProjects: ZONE_PROJECTS, taskTypes: TASK_TYPES, revisionNumbers: REVISION_NUMBERS } });
   } catch (e) { sendErr(res, e); }
 });
 
@@ -524,7 +554,7 @@ app.put('/api/teams/:id', requireAuth, requireOwner, async (req, res) => {
 // ---------- MEMBERS ----------
 app.post('/api/members', requireAuth, requireOwner, async (req, res) => {
   try {
-    const { name, username, password, teamId, isTeamLead, reportsTo, email, isViewer } = req.body;
+    const { name, username, password, teamId, isTeamLead, isSenior, reportsTo, email, isViewer } = req.body;
     // Viewers are read-only accounts for oversight — they see the whole
     // board but can't assign, edit, move, or approve anything, so a team
     // (which only matters for assignment/scoping) isn't required for them.
@@ -533,10 +563,11 @@ app.post('/api/members', requireAuth, requireOwner, async (req, res) => {
     let newMember;
     await updateTab('Members', rows => {
       if (rows.find(r => r.username.toLowerCase() === username.trim().toLowerCase())) throw new Error('USERNAME_TAKEN');
+      const lead = isViewer ? false : !!isTeamLead;
       newMember = {
         id: genId('m'), name, username: username.trim(), passwordHash: hash,
         teamId: teamId || '', color: COLORS[rows.length % COLORS.length],
-        isTeamLead: isViewer ? false : !!isTeamLead, isViewer: !!isViewer,
+        isTeamLead: lead, isSenior: (isViewer || lead) ? false : !!isSenior, isViewer: !!isViewer,
         reportsTo: (isViewer || isTeamLead) ? '' : (reportsTo || ''), email: (email || '').trim()
       };
       rows.push(newMember);
@@ -549,7 +580,7 @@ app.post('/api/members', requireAuth, requireOwner, async (req, res) => {
 
 app.put('/api/members/:id', requireAuth, requireOwner, async (req, res) => {
   try {
-    const { name, username, password, teamId, isTeamLead, reportsTo, email, isViewer } = req.body;
+    const { name, username, password, teamId, isTeamLead, isSenior, reportsTo, email, isViewer } = req.body;
     let updated;
     await updateTab('Members', async rows => {
       const m = rows.find(r => r.id === req.params.id);
@@ -561,6 +592,7 @@ app.put('/api/members/:id', requireAuth, requireOwner, async (req, res) => {
       if (teamId) m.teamId = teamId;
       m.isViewer = !!isViewer;
       m.isTeamLead = m.isViewer ? false : !!isTeamLead;
+      m.isSenior = (m.isViewer || m.isTeamLead) ? false : !!isSenior;
       m.reportsTo = (m.isViewer || m.isTeamLead) ? '' : (reportsTo || '');
       if (email !== undefined) m.email = (email || '').trim();
       updated = m;
@@ -580,20 +612,20 @@ app.delete('/api/members/:id', requireAuth, requireOwner, async (req, res) => {
 });
 
 // ---------- TASKS ----------
-app.post('/api/tasks', requireAuth, requireLeader, async (req, res) => {
+app.post('/api/tasks', requireAuth, requireAssigner, async (req, res) => {
   try {
-    const { zone, project, building, taskType, description, assignee, priority, allowOverlap, mode, durationDays, insertAfterTaskId } = req.body;
+    const { zone, project, building, taskType, description, assignee, allowOverlap, mode, durationDays, insertAfterTaskId } = req.body;
     const bodyStart = req.body.startDate;
     const bodyEnd = req.body.endDate;
     validateTaskCategorization(zone, project, taskType);
     const numDrawings = normalizeNumDrawings(req.body.numDrawings);
-    const revisionNo = (req.body.revisionNo || '').trim();
+    const revisionNo = normalizeRevisionNo(req.body.revisionNo);
     const sheetFormat = normalizeSheetFormat(req.body.sheetFormat);
     const title = composeTaskTitle({ zone, project, building, taskType });
     if (req.user.role !== 'owner') {
       if (!assignee) throw new Error('FORBIDDEN');
       const members = await readTab('Members');
-      if (!canLeadAssignTo(req.user, assignee, members)) throw new Error('FORBIDDEN');
+      if (!canAssignTo(req.user, assignee, members)) throw new Error('FORBIDDEN');
     }
     let newTask;
     await updateTab('Tasks', rows => {
@@ -617,7 +649,7 @@ app.post('/api/tasks', requireAuth, requireLeader, async (req, res) => {
       }
       newTask = {
         id: genId('t'), title, description: description || '', assignee: assignee || '',
-        priority: priority || 'M', due: endDate || '', status: 'todo', completedAt: '',
+        due: endDate || '', status: 'todo', completedAt: '',
         startDate, endDate, sequence,
         zone, project, building: building || '', taskType,
         numDrawings, revisionNo, sheetFormat,
@@ -634,13 +666,13 @@ app.post('/api/tasks', requireAuth, requireLeader, async (req, res) => {
   } catch (e) { sendErr(res, e); }
 });
 
-app.put('/api/tasks/:id', requireAuth, requireLeader, async (req, res) => {
+app.put('/api/tasks/:id', requireAuth, requireAssigner, async (req, res) => {
   try {
-    const { zone, project, building, taskType, description, assignee, priority, allowOverlap } = req.body;
+    const { zone, project, building, taskType, description, assignee, allowOverlap } = req.body;
     const bodyStart = req.body.startDate;
     const bodyEnd = req.body.endDate;
     const numDrawings = req.body.numDrawings !== undefined ? normalizeNumDrawings(req.body.numDrawings) : undefined;
-    const revisionNo = req.body.revisionNo !== undefined ? (req.body.revisionNo || '').trim() : undefined;
+    const revisionNo = req.body.revisionNo !== undefined ? normalizeRevisionNo(req.body.revisionNo) : undefined;
     const sheetFormat = req.body.sheetFormat !== undefined ? normalizeSheetFormat(req.body.sheetFormat) : undefined;
     let membersCache = null;
     if (req.user.role !== 'owner') membersCache = await readTab('Members');
@@ -651,14 +683,14 @@ app.put('/api/tasks/:id', requireAuth, requireLeader, async (req, res) => {
       const t = rows.find(r => r.id === req.params.id);
       if (!t) throw new Error('NOT_FOUND');
       if (req.user.role !== 'owner') {
-        if (!canLeadAssignTo(req.user, t.assignee, membersCache)) throw new Error('FORBIDDEN');
+        if (!canAssignTo(req.user, t.assignee, membersCache)) throw new Error('FORBIDDEN');
         if (assignee) {
-          if (!canLeadAssignTo(req.user, assignee, membersCache)) throw new Error('FORBIDDEN');
+          if (!canAssignTo(req.user, assignee, membersCache)) throw new Error('FORBIDDEN');
         }
       }
       const prevAssignee = t.assignee;
       const prevSnapshot = { id: t.id, sequence: t.sequence, startDate: t.startDate, endDate: t.endDate };
-      const before = { title: t.title, description: t.description, priority: t.priority, startDate: t.startDate, endDate: t.endDate };
+      const before = { title: t.title, description: t.description, startDate: t.startDate, endDate: t.endDate };
       const newAssignee = assignee !== undefined ? (assignee || '') : t.assignee;
       let newStart = t.startDate;
       let newEnd = t.endDate;
@@ -694,7 +726,6 @@ app.put('/api/tasks/:id', requireAuth, requireLeader, async (req, res) => {
       t.startDate = newStart || '';
       t.endDate = newEnd || '';
       if (newEnd) t.due = newEnd; // keep legacy due date untouched if this task still has no dates
-      if (priority) t.priority = priority;
       if (numDrawings !== undefined) t.numDrawings = numDrawings;
       if (revisionNo !== undefined) t.revisionNo = revisionNo;
       if (sheetFormat !== undefined) t.sheetFormat = sheetFormat;
@@ -707,7 +738,7 @@ app.put('/api/tasks/:id', requireAuth, requireLeader, async (req, res) => {
       wasReassigned = !!(newAssignee && newAssignee !== prevAssignee);
       wasUpdated = !wasReassigned && !!newAssignee && (
         before.title !== t.title || before.description !== t.description ||
-        before.priority !== t.priority || before.startDate !== t.startDate || before.endDate !== t.endDate
+        before.startDate !== t.startDate || before.endDate !== t.endDate
       );
       return rows;
     });
@@ -759,7 +790,7 @@ app.post('/api/tasks/restore', requireAuth, requireLeader, async (req, res) => {
       }
       const restoredTask = {
         id: snapshot.id, title: snapshot.title, description: snapshot.description || '',
-        assignee: snapshot.assignee || '', priority: snapshot.priority || 'M', due: snapshot.due || '',
+        assignee: snapshot.assignee || '', due: snapshot.due || '',
         status: snapshot.status || 'todo', completedAt: snapshot.completedAt || '',
         startDate: snapshot.startDate || '', endDate: snapshot.endDate || '',
         sequence: snapshot.sequence || 0, history: snapshot.history || [], createdAt: snapshot.createdAt || today(),
@@ -778,11 +809,11 @@ app.post('/api/tasks/restore', requireAuth, requireLeader, async (req, res) => {
   } catch (e) { sendErr(res, e); }
 });
 
-// Duplicates a task's title/description/priority to one assignee or several.
+// Duplicates a task's title/description to one assignee or several.
 // Dates are intentionally left blank on duplicates (copying the original's
 // dates would just trigger an overlap against the original itself) — the
-// leader sets fresh dates on each copy afterward.
-app.post('/api/tasks/:id/duplicate', requireAuth, requireLeader, async (req, res) => {
+// person assigning sets fresh dates on each copy afterward.
+app.post('/api/tasks/:id/duplicate', requireAuth, requireAssigner, async (req, res) => {
   try {
     const assignees = Array.isArray(req.body.assignees) ? req.body.assignees.filter(Boolean) : [];
     const allowOverlap = !!req.body.allowOverlap;
@@ -793,11 +824,11 @@ app.post('/api/tasks/:id/duplicate', requireAuth, requireLeader, async (req, res
     await updateTab('Tasks', rows => {
       const original = rows.find(r => r.id === req.params.id);
       if (!original) throw new Error('NOT_FOUND');
-      if (req.user.role !== 'owner' && !canLeadAssignTo(req.user, original.assignee, membersCache)) throw new Error('FORBIDDEN');
+      if (req.user.role !== 'owner' && !canAssignTo(req.user, original.assignee, membersCache)) throw new Error('FORBIDDEN');
 
       const targets = assignees.length > 0 ? assignees : [original.assignee];
       targets.forEach(assigneeId => {
-        if (assigneeId && req.user.role !== 'owner' && !canLeadAssignTo(req.user, assigneeId, membersCache)) {
+        if (assigneeId && req.user.role !== 'owner' && !canAssignTo(req.user, assigneeId, membersCache)) {
           throw new Error('FORBIDDEN');
         }
         const startDate = original.startDate || '';
@@ -807,7 +838,7 @@ app.post('/api/tasks/:id/duplicate', requireAuth, requireLeader, async (req, res
         }
         const dup = {
           id: genId('t'), title: original.title, description: original.description,
-          assignee: assigneeId || '', priority: original.priority, due: endDate,
+          assignee: assigneeId || '', due: endDate,
           status: 'todo', completedAt: '', startDate, endDate,
           sequence: assigneeId ? scheduler.nextSequence(rows, assigneeId) : 0,
           history: [{ status: 'todo', at: today() }], createdAt: today(),
@@ -841,7 +872,8 @@ async function notifyMoveTransition(fromStatus, toStatus, task, actor) {
     const members = await readTab('Members');
     const assigneeMember = members.find(m => m.id === task.assignee);
     if (fromStatus === 'inprogress' && toStatus === 'submitted') {
-      const leadId = assigneeMember && assigneeMember.reportsTo;
+      const leadMember = members.find(m => m.teamId === (assigneeMember && assigneeMember.teamId) && m.isTeamLead);
+      const leadId = leadMember && leadMember.id;
       if (leadId && leadId !== actor.id) {
         await addNotification(leadId, task.id, 'submitted', `${(assigneeMember && assigneeMember.name) || 'A team member'} submitted "${task.title}" for review`, actorLabel(actor));
       }
