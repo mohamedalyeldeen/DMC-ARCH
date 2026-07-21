@@ -247,23 +247,19 @@
   // leader, or senior. A plain member or viewer has no assignment rights.
   function canCreateTasks(){ return isOwner() || isTeamLead() || isSenior(); }
   // Whether `member` (by id) is someone this person is allowed to hand a
-  // task to. Mirrors server.js's canAssignTo exactly: scoped to an explicit,
-  // owner-configured list of specific people (session.managedMemberIds) —
-  // not a team boundary, so a lead or senior can manage named individuals
-  // scattered across different teams.
+  // task to. Mirrors server.js's canAssignTo exactly — both tiers reach
+  // anyone on any team, no team boundary, just the checkbox:
   // - Owner: anyone.
-  // - Team leader: self, or anyone in their managed list who isn't another
-  //   team leader.
-  // - Senior: self, or anyone in their managed list who isn't a team leader
-  //   or another senior.
+  // - Team leader: self, or anyone else (any team) who isn't another lead.
+  // - Senior: self, or anyone else (any team) who isn't a lead or another
+  //   senior. The only difference from a team leader is Seniors can never
+  //   delete a task.
   // - Plain member / viewer: nobody.
   function canAssignToMember(memberId){
     if(isOwner()) return true;
     if(!memberId) return false;
     if(memberId===session.id) return isTeamLead() || isSenior();
     if(!isTeamLead() && !isSenior()) return false;
-    const managed = (session && session.managedMemberIds) || [];
-    if(!managed.includes(memberId)) return false;
     const m = memberById(memberId);
     if(!m) return false;
     if(isTeamLead()) return !m.isTeamLead;
@@ -598,9 +594,8 @@
 
   // ---------- MEMBER MODAL ----------
   // Team leader and senior are mutually exclusive — checking one unchecks
-  // the other (a person is at most one tier). Either one reveals the
-  // managed-people checklist (re-rendered since the eligible pool differs
-  // by tier — a senior can't manage other seniors).
+  // the other (a person is at most one tier). No further configuration is
+  // needed: the position alone determines their team-wide reach.
   function toggleRoleCheckboxes(changed){
     if(changed==='lead' && document.getElementById('mmLead').checked){
       document.getElementById('mmSenior').checked = false;
@@ -608,48 +603,6 @@
     if(changed==='senior' && document.getElementById('mmSenior').checked){
       document.getElementById('mmLead').checked = false;
     }
-    updateManagedFieldVisibility();
-  }
-  function updateManagedFieldVisibility(){
-    const isLead = document.getElementById('mmLead').checked;
-    const isSr = document.getElementById('mmSenior').checked;
-    document.getElementById('managedField').style.display = (isLead || isSr) ? 'block' : 'none';
-    renderManagedChecklist(document.getElementById('mmId').value, currentManagedSelection());
-  }
-  // Reads whatever's currently checked in the list so re-rendering it (e.g.
-  // after switching Lead<->Senior) doesn't lose picks that are still valid
-  // under the new tier.
-  function currentManagedSelection(){
-    return Array.from(document.querySelectorAll('.managed-cb:checked')).map(cb=>cb.value);
-  }
-  function renderManagedChecklist(editingId, selectedIds){
-    const wrap = document.getElementById('managedList');
-    const isLead = document.getElementById('mmLead').checked;
-    const isSr = document.getElementById('mmSenior').checked;
-    if(!isLead && !isSr){ wrap.innerHTML=''; return; }
-    const candidates = state.members.filter(m=>{
-      if(m.isViewer) return false;
-      if(m.id===editingId) return false;
-      if(m.isTeamLead) return false; // never assignable, for a lead or senior
-      if(isSr && m.isSenior) return false; // seniors can't manage other seniors
-      return true;
-    });
-    const byTeam = {};
-    candidates.forEach(m=>{
-      const key = m.teamId || '';
-      (byTeam[key] = byTeam[key] || []).push(m);
-    });
-    let html = '';
-    state.teams.forEach(team=>{
-      const members = byTeam[team.id];
-      if(!members || !members.length) return;
-      html += `<div class="managed-group-label">${escapeHtml(team.name)}</div>`;
-      members.forEach(m=>{
-        const checked = selectedIds.includes(m.id) ? 'checked' : '';
-        html += `<div class="managed-row"><input type="checkbox" class="managed-cb" value="${m.id}" ${checked}><label style="margin:0;">${escapeHtml(m.name)}${m.isSenior?' <span class="lead-tag">SR</span>':''}</label></div>`;
-      });
-    });
-    wrap.innerHTML = html || '<div style="font-size:11.5px;color:var(--text-dim-on-paper);">No one eligible yet — add more team members first.</div>';
   }
   function toggleViewerVisibility(){
     const isViewerAccount = document.getElementById('mmViewer').checked;
@@ -660,7 +613,6 @@
       document.getElementById('mmLead').checked = false;
       document.getElementById('mmSenior').checked = false;
     }
-    updateManagedFieldVisibility();
   }
   document.getElementById('mmLead').addEventListener('change', ()=>toggleRoleCheckboxes('lead'));
   document.getElementById('mmSenior').addEventListener('change', ()=>toggleRoleCheckboxes('senior'));
@@ -673,7 +625,6 @@
     document.getElementById('mmId').value = memberId || '';
     const teamSel = document.getElementById('mmTeam');
     teamSel.innerHTML = state.teams.map(t=>`<option value="${t.id}">${escapeHtml(t.name)}</option>`).join('');
-    let preselectedManaged = [];
     if(memberId){
       const m = memberById(memberId);
       document.getElementById('memberModalTitle').textContent = 'Edit team member';
@@ -687,7 +638,6 @@
       document.getElementById('mmLead').checked = !!m.isTeamLead;
       document.getElementById('mmSenior').checked = !!m.isSenior;
       document.getElementById('mmViewer').checked = !!m.isViewer;
-      preselectedManaged = Array.isArray(m.managedMemberIds) ? m.managedMemberIds : [];
     } else {
       document.getElementById('memberModalTitle').textContent = 'Add team member';
       document.getElementById('saveMemberBtn').textContent = 'Add member';
@@ -697,7 +647,6 @@
       document.getElementById('mmViewer').checked = false;
     }
     toggleViewerVisibility();
-    renderManagedChecklist(memberId || '', preselectedManaged);
     document.getElementById('memberModalOverlay').classList.add('open');
   }
   function closeMemberModal(){ document.getElementById('memberModalOverlay').classList.remove('open'); modalOpenFlag = false; }
@@ -715,14 +664,13 @@
     const isSeniorAccount = document.getElementById('mmSenior').checked;
     const isViewerAccount = document.getElementById('mmViewer').checked;
     const email = document.getElementById('mmEmail').value.trim();
-    const managedMemberIds = currentManagedSelection();
     if(!name || !username) return;
     if(!id && !password){ alert('Set a password for the new member.'); return; }
     try{
       if(id){
-        await api('PUT', '/api/members/'+id, {name, username, password, teamId, isTeamLead, isSenior: isSeniorAccount, isViewer: isViewerAccount, email, managedMemberIds});
+        await api('PUT', '/api/members/'+id, {name, username, password, teamId, isTeamLead, isSenior: isSeniorAccount, isViewer: isViewerAccount, email});
       } else {
-        await api('POST', '/api/members', {name, username, password, teamId, isTeamLead, isSenior: isSeniorAccount, isViewer: isViewerAccount, email, managedMemberIds});
+        await api('POST', '/api/members', {name, username, password, teamId, isTeamLead, isSenior: isSeniorAccount, isViewer: isViewerAccount, email});
       }
       closeMemberModal();
       await refreshState();
@@ -915,14 +863,9 @@
   function assignableEngineers(){
     const pool = state.members.filter(m=>!m.isViewer);
     if(isOwner()) return pool;
-    if(!isTeamLead() && !isSenior()) return [];
-    const managed = (session && session.managedMemberIds) || [];
-    return pool.filter(m=>{
-      if(m.id===session.id) return true;
-      if(!managed.includes(m.id)) return false;
-      if(isTeamLead()) return !m.isTeamLead;
-      return !m.isTeamLead && !m.isSenior;
-    });
+    if(isTeamLead()) return pool.filter(m=> m.id===session.id || !m.isTeamLead);
+    if(isSenior()) return pool.filter(m=> m.id===session.id || (!m.isTeamLead && !m.isSenior));
+    return [];
   }
 
   function openDuplicateModal(taskId){
@@ -2043,18 +1986,11 @@
     `;
   }
 
-  // Owner/viewer see everyone (minus other viewers); a team leader or
-  // senior sees themself plus whoever's on their owner-configured managed
-  // list; a plain member sees just themselves. This is a read/listing
-  // scope, not an assignment scope — see assignableEngineers() for "who can
-  // I hand a task to" (narrower: excludes other leads/seniors from the
-  // managed list depending on tier).
+  // Owner/viewer/team-leader/senior all see everyone now (minus viewers) —
+  // team leaders/seniors reach across every team, so they need full
+  // visibility. A plain member sees just themselves.
   function productivityVisibleMembers(){
-    if(isOwner() || isViewer()) return state.members.filter(m=>!m.isViewer);
-    if(isTeamLead() || isSenior()){
-      const managed = (session && session.managedMemberIds) || [];
-      return state.members.filter(m=> !m.isViewer && (m.id===session.id || managed.includes(m.id)));
-    }
+    if(isOwner() || isViewer() || isTeamLead() || isSenior()) return state.members.filter(m=>!m.isViewer);
     return state.members.filter(m=>m.id===session.id);
   }
 

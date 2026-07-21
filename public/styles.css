@@ -132,9 +132,6 @@ body{background:var(--ink);color:var(--text-on-ink);font-family:'Inter',sans-ser
 .field-row .field{flex:1;}
 .field-check{display:flex;align-items:center;gap:8px;font-size:13px;}
 .field-check input{width:auto;}
-.managed-row{display:flex;align-items:center;gap:8px;font-size:12.5px;padding:4px 2px;}
-.managed-row input{width:auto;flex-shrink:0;}
-.managed-group-label{font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:.4px;text-transform:uppercase;color:var(--text-dim-on-paper);margin:8px 0 2px;}
 .modal-actions{display:flex;justify-content:space-between;align-items:center;margin-top:20px;}
 .btn-primary{background:var(--amber);color:var(--ink);border:none;padding:10px 18px;border-radius:3px;font-weight:600;font-size:13px;cursor:pointer;}
 .btn-primary:hover{background:var(--amber-dim);}
