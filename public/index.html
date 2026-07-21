@@ -110,7 +110,9 @@
       <div class="field-error" id="taskFieldsError">Zone, project, and task title are all required.</div>
       <div class="field-row">
         <div class="field"><label>No. of Drawings</label><input type="number" id="fNumDrawings" min="0" placeholder="0"></div>
-        <div class="field"><label>Revision No.</label><input type="text" id="fRevisionNo" maxlength="20" placeholder="e.g. R2"></div>
+        <div class="field"><label>Revision No.</label>
+          <select id="fRevisionNo"><option value="">— Not set —</option></select>
+        </div>
       </div>
       <div class="field-row">
         <div class="field"><label>Sheet Format</label>
@@ -123,16 +125,7 @@
         <div class="field"></div>
       </div>
       <div class="field"><label>Details</label><textarea id="fDesc" maxlength="400" placeholder="What needs to get done…"></textarea></div>
-      <div class="field-row">
-        <div class="field"><label>Assign to</label><select id="fAssignee"></select></div>
-        <div class="field"><label>Priority</label>
-          <select id="fPriority">
-            <option value="H">High</option>
-            <option value="M" selected>Medium</option>
-            <option value="L">Low</option>
-          </select>
-        </div>
-      </div>
+      <div class="field"><label>Assign to</label><select id="fAssignee"></select></div>
       <div class="field" id="autoScheduleField">
         <label class="field-check"><input type="checkbox" id="fAutoSchedule"><span style="margin:0;text-transform:none;font-size:13px;">Auto-schedule into their queue (instead of picking dates)</span></label>
       </div>
@@ -176,8 +169,8 @@
       <div class="field"><label>Company email (for task notifications)</label><input type="email" id="mmEmail" maxlength="80" placeholder="name@dmc-curve.com"></div>
       <div class="field" id="teamField"><label>Team</label><select id="mmTeam"></select></div>
       <div class="field field-check"><input type="checkbox" id="mmViewer"><label style="margin:0;text-transform:none;font-size:13px;">Viewer account (read-only — sees everything, can't assign, edit, move, or approve anything)</label></div>
-      <div class="field field-check" id="mmLeadField"><input type="checkbox" id="mmLead"><label style="margin:0;text-transform:none;font-size:13px;">Make this person a team leader (can manage &amp; approve tasks)</label></div>
-      <div class="field" id="reportsToField"><label>Reports to (team leader)</label><select id="mmReportsTo"></select></div>
+      <div class="field field-check" id="mmLeadField"><input type="checkbox" id="mmLead"><label style="margin:0;text-transform:none;font-size:13px;">Team leader — can assign or delete tasks for themself or anyone else on the team (not other team leaders)</label></div>
+      <div class="field field-check" id="mmSeniorField"><input type="checkbox" id="mmSenior"><label style="margin:0;text-transform:none;font-size:13px;">Senior — can assign tasks to themself or team members (not team leaders or other seniors); can never delete tasks</label></div>
       <div class="modal-actions">
         <button type="button" class="btn-text" id="deleteMemberBtn" style="display:none;">Remove member</button>
         <div style="margin-left:auto;display:flex;gap:10px;">
@@ -206,7 +199,7 @@
   <div class="modal">
     <h3>Duplicate task</h3>
     <input type="hidden" id="dupTaskId">
-    <p style="font-size:12.5px;color:var(--text-dim-on-paper);margin-top:-8px;">Copies the title, description, priority, and dates from the original.</p>
+    <p style="font-size:12.5px;color:var(--text-dim-on-paper);margin-top:-8px;">Copies the title, description, and drawing details from the original.</p>
     <div class="field">
       <label class="field-check" style="margin-bottom:8px;"><input type="radio" name="dupTarget" id="dupSame" checked><span style="margin:0;text-transform:none;font-size:13px;">Same assignee</span></label>
       <label class="field-check"><input type="radio" name="dupTarget" id="dupSelected"><span style="margin:0;text-transform:none;font-size:13px;">Selected engineers</span></label>

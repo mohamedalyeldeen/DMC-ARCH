@@ -5,7 +5,6 @@
     {key:'submitted', label:'Submitted for Review', accent:'var(--teal)'},
     {key:'done', label:'Done', accent:'#5C8F55'}
   ];
-  const PRIORITY_COLOR = {H:'var(--rust)', M:'var(--amber)', L:'var(--teal)'};
 
   let session = null;   // {token, role, name, id, teamId, isTeamLead}
   let state = {teams:[], members:[], tasks:[], dashboardTasks:[]};
@@ -233,23 +232,48 @@
   // ---------- STATE / PERMISSIONS ----------
   function isOwner(){ return session && session.role==='owner'; }
   function isTeamLead(){ return session && session.role==='teamlead'; }
+  function isSenior(){ return session && session.role==='senior'; }
   function isViewer(){ return session && session.role==='viewer'; }
   // Viewers see the full board like a leader would (whole-board visibility,
   // team filters, capacity/dashboard) but can never act on anything — see
-  // canManageTasks() below, which is the actual permission gate and
-  // deliberately excludes them.
-  function isLeaderLike(){ return isOwner() || isTeamLead() || isViewer(); }
+  // canManageThisTask()/canAssignThisTask() below, which are the actual
+  // permission gates and deliberately exclude them. Seniors get the same
+  // team-wide read visibility as team leads (they need to see teammates to
+  // assign to), even though their write rights are narrower.
+  function isLeaderLike(){ return isOwner() || isTeamLead() || isSenior() || isViewer(); }
   function canManageMembers(){ return isOwner(); }
-  function canManageTasks(){ return isOwner() || isTeamLead(); }
-  function isMyReport(memberId){
+  // Whether this person can create a task assignment at all (used to show
+  // the "New Task" button and gate the modal open/submit) — owner, team
+  // leader, or senior. A plain member or viewer has no assignment rights.
+  function canCreateTasks(){ return isOwner() || isTeamLead() || isSenior(); }
+  // Whether `member` (by id) is someone this person is allowed to hand a
+  // task to. Mirrors server.js's canAssignTo exactly:
+  // - Owner: anyone.
+  // - Team leader: self, or anyone else on the team who isn't another lead.
+  // - Senior: self, or a plain team member (not leads, not other seniors).
+  // - Plain member / viewer: nobody.
+  function canAssignToMember(memberId){
     if(isOwner()) return true;
-    if(memberId===session.id) return true; // team leaders can self-assign (Phase 2)
+    if(!memberId) return false;
     const m = memberById(memberId);
-    return !!(m && m.reportsTo === session.id);
+    if(memberId===session.id) return isTeamLead() || isSenior();
+    if(!isTeamLead() && !isSenior()) return false;
+    if(!m || m.teamId!==session.teamId) return false;
+    if(isTeamLead()) return !m.isTeamLead;
+    return !m.isTeamLead && !m.isSenior;
   }
+  // Whether this person can create/edit an assignment touching this task at
+  // all (i.e. it's currently assigned to someone they're allowed to touch).
+  function canAssignThisTask(t){
+    if(isOwner()) return true;
+    if(!isTeamLead() && !isSenior()) return false;
+    return canAssignToMember(t.assignee);
+  }
+  // Delete/move-backward/approve rights: owner or team leader only, never a
+  // senior or plain member, scoped to the team leader's own team.
   function canManageThisTask(t){
     if(isOwner()) return true;
-    if(isTeamLead()) return isMyReport(t.assignee);
+    if(isTeamLead()) return canAssignToMember(t.assignee);
     return false;
   }
   function canAdvance(task, fromIdx){
@@ -292,7 +316,7 @@
     if(activeTab==='board'){
       document.getElementById('viewTitle').textContent = isLeaderLike() ? "This Week's Jobs" : 'My Tasks';
       document.getElementById('board').style.display='flex';
-      document.getElementById('newTaskBtn').style.display = canManageTasks() ? 'inline-block' : 'none';
+      document.getElementById('newTaskBtn').style.display = canCreateTasks() ? 'inline-block' : 'none';
       renderBoard();
     } else if(activeTab==='gantt'){
       document.getElementById('viewTitle').textContent = 'Gantt';
@@ -437,12 +461,6 @@
           <div class="side-label"><span>Teams</span>${canManageMembers()?'<button class="ghost-btn" id="addMemberBtn" style="padding:3px 8px;">+ Member</button>':''}</div>
           <div id="memberList"></div>
         </div>
-        <div class="side-section">
-          <div class="side-label"><span>Priority key</span></div>
-          <div class="legend-row"><span class="stamp-dot" style="background:var(--rust);">H</span> High priority</div>
-          <div class="legend-row"><span class="stamp-dot" style="background:var(--amber);">M</span> Medium priority</div>
-          <div class="legend-row"><span class="stamp-dot" style="background:var(--teal);">L</span> Low priority</div>
-        </div>
         <div class="sidebar-foot">
           <button class="ghost-btn" id="exportBtn">↓ EXPORT SNAPSHOT (.json)</button>
           <div style="font-size:10.5px;color:var(--text-dim-on-ink);line-height:1.5;">Tasks are stored in your Google Sheet. Use File → Version history there for backups.</div>
@@ -506,7 +524,7 @@
         row.className = 'member-row' + (active?' active':'');
         row.innerHTML = `
           <div class="avatar" style="background:${m.color};">${initials(m.name)}</div>
-          ${m.isTeamLead? '<span class="lead-tag">LEAD</span>':''}
+          ${m.isTeamLead? '<span class="lead-tag">LEAD</span>' : (m.isSenior? '<span class="lead-tag">SR</span>' : '')}
           <div class="member-name">${escapeHtml(m.name)}</div>
           <div class="member-count">${count}</div>
           ${canManageMembers()? `<div class="ed-x" data-id="${m.id}">✎</div><div class="rm-x" data-id="${m.id}">✕</div>`:''}
@@ -572,32 +590,29 @@
   }
 
   // ---------- MEMBER MODAL ----------
-  function populateReportsToOptions(teamId, selected){
-    const sel = document.getElementById('mmReportsTo');
-    const leaders = state.members.filter(m=>m.isTeamLead && m.teamId===teamId);
-    if(leaders.length===0){
-      sel.innerHTML = '<option value="">No team leader on this team yet</option>';
-    } else {
-      sel.innerHTML = '<option value="">Not assigned</option>' + leaders.map(l=>`<option value="${l.id}">${escapeHtml(l.name)}</option>`).join('');
+  // Team leader and senior are mutually exclusive — checking one unchecks
+  // the other (a person is at most one tier).
+  function toggleRoleCheckboxes(changed){
+    if(changed==='lead' && document.getElementById('mmLead').checked){
+      document.getElementById('mmSenior').checked = false;
     }
-    sel.value = selected || '';
-  }
-  function toggleReportsToVisibility(){
-    const isLead = document.getElementById('mmLead').checked;
-    document.getElementById('reportsToField').style.display = isLead ? 'none' : 'block';
+    if(changed==='senior' && document.getElementById('mmSenior').checked){
+      document.getElementById('mmLead').checked = false;
+    }
   }
   function toggleViewerVisibility(){
     const isViewerAccount = document.getElementById('mmViewer').checked;
     document.getElementById('teamField').style.display = isViewerAccount ? 'none' : 'block';
     document.getElementById('mmLeadField').style.display = isViewerAccount ? 'none' : 'block';
-    document.getElementById('reportsToField').style.display = isViewerAccount ? 'none' : (document.getElementById('mmLead').checked ? 'none' : 'block');
-    if(isViewerAccount) document.getElementById('mmLead').checked = false;
+    document.getElementById('mmSeniorField').style.display = isViewerAccount ? 'none' : 'block';
+    if(isViewerAccount){
+      document.getElementById('mmLead').checked = false;
+      document.getElementById('mmSenior').checked = false;
+    }
   }
-  document.getElementById('mmLead').addEventListener('change', toggleReportsToVisibility);
+  document.getElementById('mmLead').addEventListener('change', ()=>toggleRoleCheckboxes('lead'));
+  document.getElementById('mmSenior').addEventListener('change', ()=>toggleRoleCheckboxes('senior'));
   document.getElementById('mmViewer').addEventListener('change', toggleViewerVisibility);
-  document.getElementById('mmTeam').addEventListener('change', (e)=>{
-    populateReportsToOptions(e.target.value, '');
-  });
 
   function openMemberModal(memberId){
     modalOpenFlag = true;
@@ -617,17 +632,16 @@
       document.getElementById('mmEmail').value = m.email || '';
       teamSel.value = m.teamId;
       document.getElementById('mmLead').checked = !!m.isTeamLead;
+      document.getElementById('mmSenior').checked = !!m.isSenior;
       document.getElementById('mmViewer').checked = !!m.isViewer;
-      populateReportsToOptions(m.teamId, m.reportsTo);
     } else {
       document.getElementById('memberModalTitle').textContent = 'Add team member';
       document.getElementById('saveMemberBtn').textContent = 'Add member';
       document.getElementById('deleteMemberBtn').style.display='none';
       document.getElementById('mmLead').checked = false;
+      document.getElementById('mmSenior').checked = false;
       document.getElementById('mmViewer').checked = false;
-      populateReportsToOptions(teamSel.value, '');
     }
-    toggleReportsToVisibility();
     toggleViewerVisibility();
     document.getElementById('memberModalOverlay').classList.add('open');
   }
@@ -643,16 +657,16 @@
     const password = document.getElementById('mmPassword').value;
     const teamId = document.getElementById('mmTeam').value;
     const isTeamLead = document.getElementById('mmLead').checked;
+    const isSeniorAccount = document.getElementById('mmSenior').checked;
     const isViewerAccount = document.getElementById('mmViewer').checked;
-    const reportsTo = document.getElementById('mmReportsTo').value;
     const email = document.getElementById('mmEmail').value.trim();
     if(!name || !username) return;
     if(!id && !password){ alert('Set a password for the new member.'); return; }
     try{
       if(id){
-        await api('PUT', '/api/members/'+id, {name, username, password, teamId, isTeamLead, isViewer: isViewerAccount, reportsTo, email});
+        await api('PUT', '/api/members/'+id, {name, username, password, teamId, isTeamLead, isSenior: isSeniorAccount, isViewer: isViewerAccount, email});
       } else {
-        await api('POST', '/api/members', {name, username, password, teamId, isTeamLead, isViewer: isViewerAccount, reportsTo, email});
+        await api('POST', '/api/members', {name, username, password, teamId, isTeamLead, isSenior: isSeniorAccount, isViewer: isViewerAccount, email});
       }
       closeMemberModal();
       await refreshState();
@@ -725,12 +739,11 @@
 
     const canFwd = colIdx<COLUMNS.length-1 && canAdvance(t, colIdx);
     const canBack = colIdx>0 && canManageThisTask(t);
-    const canEdit = canManageThisTask(t);
+    const canEdit = canAssignThisTask(t);
 
     el.innerHTML = `
       <div class="ticket-stub">
         <div class="ticket-num">#${(t.id||'').replace(/\D/g,'').slice(-3).padStart(3,'0')}</div>
-        <div class="ticket-priority" style="background:${PRIORITY_COLOR[t.priority]};">${t.priority}</div>
       </div>
       <div class="ticket-body">
         ${t.taskType ? `<div class="ticket-location">${escapeHtml(t.zone||'')} · ${escapeHtml(t.project||'')}${t.building?' · '+escapeHtml(t.building):''}</div>` : ''}
@@ -831,19 +844,24 @@
     const sel = document.getElementById('fAssignee');
     let html = isOwner() ? '<option value="">Unassigned</option>' : '';
     state.teams.forEach(team=>{
-      let members = state.members.filter(m=>m.teamId===team.id);
-      if(!isOwner()) members = members.filter(m=> m.reportsTo===session.id || m.id===session.id);
+      const members = assignableEngineers().filter(m=>m.teamId===team.id);
       if(members.length===0) return;
       html += `<optgroup label="${escapeHtml(team.name)}">` + members.map(m=>`<option value="${m.id}">${escapeHtml(m.name)}</option>`).join('') + '</optgroup>';
     });
-    if(!html) html = '<option value="">No one reports to you yet</option>';
+    if(!html) html = '<option value="">No one you can assign to yet</option>';
     sel.innerHTML = html;
     sel.value = selected || '';
   }
 
+  // Who this person is allowed to hand a task to — mirrors canAssignTo on
+  // the server exactly (see canAssignToMember above), always excluding
+  // viewer accounts (they never do task work).
   function assignableEngineers(){
-    if(isOwner()) return state.members;
-    return state.members.filter(m=> m.reportsTo===session.id || m.id===session.id);
+    const pool = state.members.filter(m=>!m.isViewer);
+    if(isOwner()) return pool;
+    if(isTeamLead()) return pool.filter(m=> m.id===session.id || (m.teamId===session.teamId && !m.isTeamLead));
+    if(isSenior()) return pool.filter(m=> m.id===session.id || (m.teamId===session.teamId && !m.isTeamLead && !m.isSenior));
+    return [];
   }
 
   function openDuplicateModal(taskId){
@@ -916,6 +934,11 @@
       const opt = document.createElement('option'); opt.value = tt; opt.textContent = tt;
       typeSel.appendChild(opt);
     });
+    const revSel = document.getElementById('fRevisionNo');
+    (state.taxonomy.revisionNumbers || []).forEach(rv=>{
+      const opt = document.createElement('option'); opt.value = rv; opt.textContent = rv;
+      revSel.appendChild(opt);
+    });
     taxonomyPopulated = true;
   }
   function populateProjectOptions(zone, selectedProject){
@@ -949,7 +972,7 @@
   }
 
   function openTaskModal(taskId){
-    if(!canManageTasks()) return;
+    if(!canCreateTasks()) return;
     modalOpenFlag = true;
     populateTaxonomyOptions();
     const form = document.getElementById('taskForm');
@@ -969,7 +992,6 @@
       document.getElementById('fSheetFormat').value = t.sheetFormat || '';
       document.getElementById('fDesc').value=t.description||'';
       fillAssigneeOptions(t.assignee);
-      document.getElementById('fPriority').value=t.priority;
       document.getElementById('fStartDate').value=t.startDate||'';
       document.getElementById('fEndDate').value=t.endDate||'';
       document.getElementById('fAllowOverlap').checked=false;
@@ -988,7 +1010,6 @@
       document.getElementById('fRevisionNo').value = '';
       document.getElementById('fSheetFormat').value = '';
       fillAssigneeOptions('');
-      document.getElementById('fPriority').value='M';
       document.getElementById('fStartDate').value='';
       document.getElementById('fEndDate').value='';
       document.getElementById('fAllowOverlap').checked=false;
@@ -1010,7 +1031,7 @@
 
   document.getElementById('taskForm').addEventListener('submit', async (e)=>{
     e.preventDefault();
-    if(!canManageTasks()) return;
+    if(!canCreateTasks()) return;
     const id = document.getElementById('taskId').value;
     const zone = document.getElementById('fZone').value;
     const project = document.getElementById('fProject').value;
@@ -1022,9 +1043,8 @@
     }
     const description = document.getElementById('fDesc').value.trim();
     const assignee = document.getElementById('fAssignee').value || '';
-    const priority = document.getElementById('fPriority').value;
     const numDrawings = document.getElementById('fNumDrawings').value;
-    const revisionNo = document.getElementById('fRevisionNo').value.trim();
+    const revisionNo = document.getElementById('fRevisionNo').value;
     const sheetFormat = document.getElementById('fSheetFormat').value;
     const isAuto = document.getElementById('fAutoSchedule').checked && !id;
     if(!validateManualDates()) return;
@@ -1034,11 +1054,11 @@
         const beforeSnapshot = prevTask ? {
           zone: prevTask.zone, project: prevTask.project, building: prevTask.building, taskType: prevTask.taskType,
           description: prevTask.description, assignee: prevTask.assignee,
-          priority: prevTask.priority, startDate: prevTask.startDate, endDate: prevTask.endDate,
+          startDate: prevTask.startDate, endDate: prevTask.endDate,
           numDrawings: prevTask.numDrawings, revisionNo: prevTask.revisionNo, sheetFormat: prevTask.sheetFormat
         } : null;
         await api('PUT', '/api/tasks/'+id, {
-          zone, project, building, taskType, description, assignee, priority,
+          zone, project, building, taskType, description, assignee,
           numDrawings, revisionNo, sheetFormat,
           startDate: document.getElementById('fStartDate').value || '',
           endDate: document.getElementById('fEndDate').value || '',
@@ -1051,29 +1071,32 @@
         }
       } else if(isAuto){
         const created = await api('POST', '/api/tasks', {
-          zone, project, building, taskType, description, assignee, priority,
+          zone, project, building, taskType, description, assignee,
           numDrawings, revisionNo, sheetFormat,
           mode: 'auto',
           durationDays: parseInt(document.getElementById('fDuration').value,10) || 1,
           insertAfterTaskId: document.getElementById('fInsertAfter').value || null
         });
-        pushUndo(`Created "${created.title}"`, async ()=>{ await api('DELETE', '/api/tasks/'+created.id); });
+        // Seniors can never delete a task (business rule), so Undo-after-
+        // create — which works by deleting the task — would just fail with
+        // a 403 for them. Skip offering it rather than show a broken button.
+        if(!isSenior()) pushUndo(`Created "${created.title}"`, async ()=>{ await api('DELETE', '/api/tasks/'+created.id); });
       } else {
         const created = await api('POST', '/api/tasks', {
-          zone, project, building, taskType, description, assignee, priority,
+          zone, project, building, taskType, description, assignee,
           numDrawings, revisionNo, sheetFormat,
           startDate: document.getElementById('fStartDate').value || '',
           endDate: document.getElementById('fEndDate').value || '',
           allowOverlap: document.getElementById('fAllowOverlap').checked
         });
-        pushUndo(`Created "${created.title}"`, async ()=>{ await api('DELETE', '/api/tasks/'+created.id); });
+        if(!isSenior()) pushUndo(`Created "${created.title}"`, async ()=>{ await api('DELETE', '/api/tasks/'+created.id); });
       }
       closeTaskModal();
       await refreshState();
     }catch(e){ alert(e.message); }
   });
   document.getElementById('deleteTaskBtn').addEventListener('click', async ()=>{
-    if(!canManageTasks()) return;
+    if(!canCreateTasks()) return;
     const id = document.getElementById('taskId').value;
     if(!id || !confirm('Delete this task?')) return;
     const snapshot = state.tasks.find(x=>x.id===id);
@@ -1096,7 +1119,7 @@
   // Reuses the same task/member/team data as the board and the same
   // member/team sidebar filter — no separate backend endpoint needed.
   function ganttVisibleMembers(){
-    let members = state.members;
+    let members = state.members.filter(m=>!m.isViewer);
     if(!isLeaderLike()) return members.filter(m=>m.id===session.id);
     if(filter){
       if(filter.type==='team') members = members.filter(m=>m.teamId===filter.id);
@@ -1495,9 +1518,7 @@
 
   function renderEstimatedVsActualCard(pool){
     const stats = computeEstimatedVsActual(pool, evaFilters);
-    const engineerOptions = isLeaderLike()
-      ? (isOwner() ? state.members : state.members.filter(m=>m.reportsTo===session.id || m.id===session.id))
-      : [];
+    const engineerOptions = isLeaderLike() ? productivityVisibleMembers() : [];
     const filterRow = isLeaderLike() ? `
       <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px;">
         <select id="evaEngineerFilter" style="padding:6px 8px;border-radius:3px;border:1px solid var(--line-on-ink);background:var(--ink);color:var(--text-on-ink);font-size:12px;">
@@ -1546,13 +1567,13 @@
     const el = document.getElementById('dashboardView');
     if(isLeaderLike()){
       const pool = state.dashboardTasks || state.tasks;
-      const visibleMembers = isOwner() ? state.members : state.members.filter(m=>m.reportsTo===session.id || m.id===session.id);
+      const visibleMembers = productivityVisibleMembers();
       let rows = visibleMembers.map(m=>{
         const s = memberStats(m.id, pool);
         const pct = s.completed>0 ? Math.round((s.onTime/s.completed)*100) : 0;
         const team = teamById(m.teamId);
         return `<tr>
-          <td>${escapeHtml(m.name)}${m.isTeamLead?' <span class="lead-tag">LEAD</span>':''}</td>
+          <td>${escapeHtml(m.name)}${m.isTeamLead?' <span class="lead-tag">LEAD</span>':(m.isSenior?' <span class="lead-tag">SR</span>':'')}</td>
           <td>${escapeHtml(team?team.name:'—')}</td>
           <td>${s.total}</td><td>${s.open}</td><td>${s.completed}</td>
           <td><div style="display:flex;align-items:center;gap:8px;"><div class="bar-track"><div class="bar-fill" style="width:${pct}%;"></div></div><span>${pct}%</span></div></td>
@@ -1961,21 +1982,47 @@
     `;
   }
 
-  // Owner/viewer see everyone; a team leader sees their own team; a plain
-  // member sees just themselves — same scoping rule used elsewhere.
+  // Owner/viewer see everyone (minus other viewers); a team leader or
+  // senior sees their whole team (minus viewers); a plain member sees just
+  // themselves. This is a read/listing scope, not an assignment scope — see
+  // assignableEngineers() for "who can I hand a task to."
   function productivityVisibleMembers(){
     if(isOwner() || isViewer()) return state.members.filter(m=>!m.isViewer);
-    if(isTeamLead()) return state.members.filter(m=> !m.isViewer && (m.reportsTo===session.id || m.id===session.id));
+    if(isTeamLead() || isSenior()) return state.members.filter(m=> !m.isViewer && m.teamId===session.teamId);
     return state.members.filter(m=>m.id===session.id);
   }
 
+  // Productivity formula: only Rev.0 drawings count at all, and only
+  // certain task types count toward the rate — everything else (including
+  // Coordination/RFI/Study/Modeling, and any non-Rev.0 revision) is 0.
+  // RFP and QS count at face value; Clean Copy and As Built count at half
+  // weight; SD depends on how it was made — CAD counts at face value, BIM
+  // counts at 2.5x (BIM shop drawings represent proportionally more work).
+  function taskProductivityWeight(t){
+    if(t.revisionNo !== 'Rev.0') return 0;
+    const n = parseInt(t.numDrawings,10)||0;
+    if(n<=0) return 0;
+    switch(t.taskType){
+      case 'RFP':
+      case 'QS':
+        return n * 1;
+      case 'Clean Copy':
+      case 'As Built':
+        return n * 0.5;
+      case 'SD':
+        return n * (t.sheetFormat==='BIM' ? 2.5 : 1);
+      default:
+        return 0;
+    }
+  }
+
   function computeProductivity(memberId, month){
-    const drawings = doneTasksPool().filter(t=> t.assignee===memberId && (t.completedAt||'').slice(0,7)===month)
-      .reduce((sum,t)=> sum + (parseInt(t.numDrawings,10)||0), 0);
+    const weighted = doneTasksPool().filter(t=> t.assignee===memberId && (t.completedAt||'').slice(0,7)===month)
+      .reduce((sum,t)=> sum + taskProductivityWeight(t), 0);
     const wd = logWorkdays.find(w=>w.memberId===memberId && w.month===month);
     const days = wd ? (parseInt(wd.days,10)||0) : 0;
-    const rate = days>0 ? Math.round((drawings/days)*100)/100 : null;
-    return {drawings, days, rate};
+    const rate = days>0 ? Math.round((weighted/days)*100)/100 : null;
+    return {weighted, days, rate};
   }
 
   function renderProductivitySection(){
@@ -1991,8 +2038,8 @@
         <div class="prod-rank">#${i+1}</div>
         <div class="prod-name">${escapeHtml(r.member.name)}</div>
         <div class="prod-rate">${r.rate!==null ? r.rate : '—'}</div>
-        <div class="prod-rate-lbl">drawings / day</div>
-        <div class="prod-row"><span>Drawings this month</span><span>${r.drawings}</span></div>
+        <div class="prod-rate-lbl">weighted score / day</div>
+        <div class="prod-row"><span>Weighted score this month</span><span>${r.weighted}</span></div>
         <div class="prod-row"><span>Work days</span>${daysField}</div>
       </div>`;
     }).join('');
@@ -2003,6 +2050,7 @@
           <input type="month" id="logMonthPicker" value="${logMonth}" style="padding:6px 8px;border-radius:3px;border:1px solid var(--line-on-ink);background:var(--ink);color:var(--text-on-ink);font-size:12px;">
           ${isOwner() ? '<span style="margin-left:10px;font-size:11px;color:var(--text-dim-on-ink);">Enter each engineer\'s work days for the selected month to compute their rate.</span>' : ''}
         </div>
+        <div style="font-size:11px;color:var(--text-dim-on-ink);margin-bottom:14px;">Only Rev.0 drawings count, and only RFP/QS (×1), Clean Copy/As Built (×0.5), and SD (CAD ×1, BIM ×2.5) contribute to the score.</div>
         <div class="prod-grid">${cardsHtml || '<div class="notif-empty">No engineers to show.</div>'}</div>
       </div>
     `;
