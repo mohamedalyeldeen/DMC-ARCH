@@ -69,34 +69,49 @@ function composeTaskTitle({ zone, project, building, taskType }) {
 function genId(prefix) { return prefix + crypto.randomBytes(4).toString('hex'); }
 function today() { return new Date().toISOString().slice(0, 10); }
 
+// Looks up `user`'s own fresh Members-tab row (for up-to-date managedMemberIds
+// — the JWT can be up to 12h stale) and returns their explicit "can assign
+// to" list. Owner has no Members row and doesn't need one (canAssignTo/
+// canLeadAssignTo both short-circuit true for the owner before this is used).
+function managedIdsOf(user, membersCache) {
+  const actorRecord = (membersCache || []).find(m => m.id === user.id);
+  const ids = actorRecord ? actorRecord.managedMemberIds : user.managedMemberIds;
+  return Array.isArray(ids) ? ids : [];
+}
+
 // Only the owner or a team leader can delete a task, move it backward, or
 // approve it forward past "submitted" — never a senior or plain member.
-// A team leader's reach is their own team (by teamId), excluding other team
-// leaders — matches "team leaders can act on themselves or anyone else on
-// the team, but not on each other."
+// A team leader's reach is whoever the owner explicitly listed as someone
+// they manage (managedMemberIds) — this is an owner-configured list of
+// specific people, not a team boundary — plus themself. Never another team
+// leader, even if mistakenly added to the list.
 function canLeadAssignTo(user, assigneeId, membersCache) {
   if (user.role === 'owner') return true;
   if (!user.isTeamLead) return false;
   if (assigneeId === user.id) return true;
+  if (!managedIdsOf(user, membersCache).includes(assigneeId)) return false;
   const target = membersCache.find(m => m.id === assigneeId);
-  return !!(target && target.teamId === user.teamId && !target.isTeamLead);
+  return !!(target && !target.isTeamLead);
 }
 
 // Owner, team leader, or senior can create/edit a task's assignment — this
 // is the "who am I allowed to hand this task to" check used by
-// POST/PUT/duplicate on /api/tasks.
-// - Team leader: themself, or anyone else on the team who isn't another
-//   team leader (so: seniors and plain team members).
-// - Senior: themself, or a plain team member on the team — never another
-//   senior, never a team leader.
+// POST/PUT/duplicate on /api/tasks. Both team leaders and seniors are
+// scoped to their own owner-configured managedMemberIds list (specific
+// named people, regardless of team) plus themself:
+// - Team leader: self, or anyone in their managed list who isn't another
+//   team leader.
+// - Senior: self, or anyone in their managed list who isn't a team leader
+//   or another senior.
 // - Plain member / viewer: nobody — no assignment rights at all.
 function canAssignTo(user, assigneeId, membersCache) {
   if (user.role === 'owner') return true;
   if (user.isViewer) return false;
   if (assigneeId === user.id) return !!(user.isTeamLead || user.isSenior);
   if (!user.isTeamLead && !user.isSenior) return false;
+  if (!managedIdsOf(user, membersCache).includes(assigneeId)) return false;
   const target = membersCache.find(m => m.id === assigneeId);
-  if (!target || target.teamId !== user.teamId) return false;
+  if (!target) return false;
   if (user.isTeamLead) return !target.isTeamLead;
   return !target.isTeamLead && !target.isSenior;
 }
@@ -121,7 +136,7 @@ function sendErr(res, e) {
     WEEKEND_DATE: 'Friday and Saturday are non-working days — tasks can\'t start or end on one of those.'
   };
   console.error(e);
-  res.status(status).json({ error: messages[e.message] || 'Something went wrong.' });
+  res.status(status).json({ error: messages[e.message] || `Something went wrong: ${e.message || 'unknown error'}` });
 }
 
 // Friday/Saturday are non-working days: nobody gets assigned a task that
@@ -238,7 +253,7 @@ async function evaluateMemberAchievements(memberId, allTasks, justCompletedTask,
   });
   if (!member) return { newAchievements: [], member: null };
 
-  const existing = await readTab('Achievements');
+  const existing = await readTab('Achievements').catch(() => []);
   const existingKeys = new Set(existing.filter(a => a.memberId === memberId).map(a => `${a.type}:${a.triggerKey}`));
   const ctx = { memberTasks, justCompletedTask, streak: { noOverdueStreak: member.noOverdueStreak }, todayStr };
   const earned = achievements.evaluateAchievements(ctx, existingKeys);
@@ -312,8 +327,8 @@ app.post('/api/auth/login-member', async (req, res) => {
     if (!m) return res.status(401).json({ error: 'Incorrect username or password.' });
     const ok = await bcrypt.compare(password || '', m.passwordHash);
     if (!ok) return res.status(401).json({ error: 'Incorrect username or password.' });
-    const token = sign({ role: 'member', id: m.id, teamId: m.teamId, isTeamLead: m.isTeamLead, isSenior: m.isSenior, isViewer: m.isViewer, name: m.name });
-    res.json({ token, role: m.isViewer ? 'viewer' : (m.isTeamLead ? 'teamlead' : (m.isSenior ? 'senior' : 'member')), name: m.name, teamId: m.teamId, isTeamLead: m.isTeamLead, isSenior: m.isSenior, isViewer: m.isViewer, id: m.id });
+    const token = sign({ role: 'member', id: m.id, teamId: m.teamId, isTeamLead: m.isTeamLead, isSenior: m.isSenior, isViewer: m.isViewer, managedMemberIds: m.managedMemberIds || [], name: m.name });
+    res.json({ token, role: m.isViewer ? 'viewer' : (m.isTeamLead ? 'teamlead' : (m.isSenior ? 'senior' : 'member')), name: m.name, teamId: m.teamId, isTeamLead: m.isTeamLead, isSenior: m.isSenior, isViewer: m.isViewer, managedMemberIds: m.managedMemberIds || [], id: m.id });
   } catch (e) { sendErr(res, e); }
 });
 
@@ -345,7 +360,11 @@ app.get('/api/capacity', requireAuth, async (req, res) => {
     const [membersRaw, tasksAll] = await Promise.all([readTab('Members'), readTab('Tasks')]);
     let visibleMembers = membersRaw;
     if (req.user.role !== 'owner' && !req.user.isViewer) {
-      visibleMembers = membersRaw.filter(m => m.teamId === req.user.teamId);
+      const myRecord = membersRaw.find(m => m.id === req.user.id);
+      const managedIds = myRecord && Array.isArray(myRecord.managedMemberIds) ? myRecord.managedMemberIds : [];
+      const myIds = new Set(managedIds);
+      myIds.add(req.user.id);
+      visibleMembers = membersRaw.filter(m => myIds.has(m.id));
     }
     const capacity = visibleMembers.filter(m => !m.isViewer).map(m => {
       const c = scheduler.engineerCapacity(tasksAll, m.id);
@@ -367,7 +386,10 @@ app.get('/api/workdays', requireAuth, async (req, res) => {
     if (req.user.role === 'member' && !req.user.isViewer) {
       if (req.user.isTeamLead || req.user.isSenior) {
         const members = await readTab('Members');
-        const myIds = new Set(members.filter(m => m.teamId === req.user.teamId && !m.isViewer).map(m => m.id));
+        const myRecord = members.find(m => m.id === req.user.id);
+        const managedIds = myRecord && Array.isArray(myRecord.managedMemberIds) ? myRecord.managedMemberIds : [];
+        const myIds = new Set(managedIds);
+        myIds.add(req.user.id);
         rows = rowsAll.filter(r => myIds.has(r.memberId));
       } else {
         rows = rowsAll.filter(r => r.memberId === req.user.id);
@@ -443,16 +465,20 @@ app.get('/api/state', requireAuth, async (req, res) => {
       teams = teamsAll;
       visibleMembersRaw = membersRaw;
     } else if (req.user.isTeamLead || req.user.isSenior) {
-      // Team leaders and seniors both see their whole team (by teamId) —
-      // they need to be able to see and pick teammates when assigning work,
-      // even though a senior's actual assignment rights are narrower (see
-      // canAssignTo in the tasks endpoints below).
-      const myTeamId = req.user.teamId;
-      const myTeamIds = new Set(membersRaw.filter(m => m.teamId === myTeamId).map(m => m.id));
-      tasks = tasksAll.filter(t => myTeamIds.has(t.assignee));
+      // A team leader or senior's reach is now an owner-configured list of
+      // specific people (managedMemberIds) — not a team boundary, since one
+      // person can manage named individuals scattered across teams. Team
+      // labels/colors aren't sensitive, so everyone still gets the full
+      // Teams list (just for display/grouping), but the roster and task
+      // list are scoped to "myself + whoever I manage."
+      const myRecord = membersRaw.find(m => m.id === req.user.id);
+      const managedIds = myRecord && Array.isArray(myRecord.managedMemberIds) ? myRecord.managedMemberIds : [];
+      const myIds = new Set(managedIds);
+      myIds.add(req.user.id);
+      tasks = tasksAll.filter(t => myIds.has(t.assignee));
       dashboardTasks = tasks;
-      teams = teamsAll.filter(t => t.id === myTeamId);
-      visibleMembersRaw = membersRaw.filter(m => m.teamId === myTeamId);
+      teams = teamsAll;
+      visibleMembersRaw = membersRaw.filter(m => myIds.has(m.id));
     } else {
       tasks = tasksAll.filter(t => t.assignee === req.user.id);
       dashboardTasks = tasks;
@@ -552,6 +578,26 @@ app.put('/api/teams/:id', requireAuth, requireOwner, async (req, res) => {
 });
 
 // ---------- MEMBERS ----------
+// Sanitizes the managedMemberIds list an owner submits for a team leader or
+// senior: must be an array, deduped, self-reference stripped (self-assign is
+// already implicit and handled separately), and every id must correspond to
+// an actual (non-deleted) member — silently drops anything else rather than
+// erroring, since the list is just "who shows up as assignable," not a
+// security-critical structure that needs strict validation.
+function sanitizeManagedIds(raw, ownId, membersCache) {
+  if (!Array.isArray(raw)) return [];
+  const validIds = new Set(membersCache.map(m => m.id));
+  const seen = new Set();
+  const out = [];
+  raw.forEach(id => {
+    if (typeof id === 'string' && id !== ownId && validIds.has(id) && !seen.has(id)) {
+      seen.add(id);
+      out.push(id);
+    }
+  });
+  return out;
+}
+
 app.post('/api/members', requireAuth, requireOwner, async (req, res) => {
   try {
     const { name, username, password, teamId, isTeamLead, isSenior, reportsTo, email, isViewer } = req.body;
@@ -564,11 +610,15 @@ app.post('/api/members', requireAuth, requireOwner, async (req, res) => {
     await updateTab('Members', rows => {
       if (rows.find(r => r.username.toLowerCase() === username.trim().toLowerCase())) throw new Error('USERNAME_TAKEN');
       const lead = isViewer ? false : !!isTeamLead;
+      const senior = (isViewer || lead) ? false : !!isSenior;
+      const id = genId('m');
+      const managedMemberIds = (lead || senior) ? sanitizeManagedIds(req.body.managedMemberIds, id, rows) : [];
       newMember = {
-        id: genId('m'), name, username: username.trim(), passwordHash: hash,
+        id, name, username: username.trim(), passwordHash: hash,
         teamId: teamId || '', color: COLORS[rows.length % COLORS.length],
-        isTeamLead: lead, isSenior: (isViewer || lead) ? false : !!isSenior, isViewer: !!isViewer,
-        reportsTo: (isViewer || isTeamLead) ? '' : (reportsTo || ''), email: (email || '').trim()
+        isTeamLead: lead, isSenior: senior, isViewer: !!isViewer,
+        reportsTo: (isViewer || isTeamLead) ? '' : (reportsTo || ''), email: (email || '').trim(),
+        managedMemberIds
       };
       rows.push(newMember);
       return rows;
@@ -595,6 +645,7 @@ app.put('/api/members/:id', requireAuth, requireOwner, async (req, res) => {
       m.isSenior = (m.isViewer || m.isTeamLead) ? false : !!isSenior;
       m.reportsTo = (m.isViewer || m.isTeamLead) ? '' : (reportsTo || '');
       if (email !== undefined) m.email = (email || '').trim();
+      m.managedMemberIds = (m.isTeamLead || m.isSenior) ? sanitizeManagedIds(req.body.managedMemberIds, m.id, rows) : [];
       updated = m;
       return rows;
     });
@@ -872,10 +923,12 @@ async function notifyMoveTransition(fromStatus, toStatus, task, actor) {
     const members = await readTab('Members');
     const assigneeMember = members.find(m => m.id === task.assignee);
     if (fromStatus === 'inprogress' && toStatus === 'submitted') {
-      const leadMember = members.find(m => m.teamId === (assigneeMember && assigneeMember.teamId) && m.isTeamLead);
-      const leadId = leadMember && leadMember.id;
-      if (leadId && leadId !== actor.id) {
-        await addNotification(leadId, task.id, 'submitted', `${(assigneeMember && assigneeMember.name) || 'A team member'} submitted "${task.title}" for review`, actorLabel(actor));
+      const assigneeId = assigneeMember && assigneeMember.id;
+      const managers = members.filter(m => m.isTeamLead && Array.isArray(m.managedMemberIds) && m.managedMemberIds.includes(assigneeId));
+      for (const manager of managers) {
+        if (manager.id !== actor.id) {
+          await addNotification(manager.id, task.id, 'submitted', `${(assigneeMember && assigneeMember.name) || 'A team member'} submitted "${task.title}" for review`, actorLabel(actor));
+        }
       }
     } else if (fromStatus === 'submitted' && toStatus === 'inprogress') {
       if (task.assignee !== actor.id) {
