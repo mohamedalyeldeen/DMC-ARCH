@@ -61,7 +61,16 @@ function normalizeNumDrawings(n) {
 // Title is derived entirely from whatever distinct (taskType, item) pairs
 // exist in the sheet — an owner adding a new item name (or new taskType)
 // there is all it takes for it to show up as selectable, no code change.
+// Cached briefly: this gets read on every /api/state poll (every ~8s per
+// open tab), but the owner editing it directly in the sheet is rare —
+// re-reading it that often was needless load against the Sheets API quota.
+let checklistTemplatesCache = null;
+let checklistTemplatesCacheAt = 0;
+const CHECKLIST_TEMPLATES_CACHE_MS = 60000;
 async function getChecklistTemplates() {
+  if (checklistTemplatesCache && (Date.now() - checklistTemplatesCacheAt) < CHECKLIST_TEMPLATES_CACHE_MS) {
+    return checklistTemplatesCache;
+  }
   const rows = await readTab('ChecklistTemplates').catch(() => []);
   const map = {};
   rows.forEach(row => {
@@ -75,6 +84,8 @@ async function getChecklistTemplates() {
       map[tt][item] = map[tt][item].sort((a, b) => (a.order || 0) - (b.order || 0)).map(r => r.text);
     });
   });
+  checklistTemplatesCache = map;
+  checklistTemplatesCacheAt = Date.now();
   return map;
 }
 
