@@ -465,10 +465,15 @@ app.post('/api/project-targets', requireAuth, requireOwner, async (req, res) => 
     if (!zone || !project) throw new Error('BAD_REQUEST');
     if (!ZONE_PROJECTS[zone] || !ZONE_PROJECTS[zone].includes(project)) throw new Error('BAD_REQUEST');
     const targetDrawings = Math.max(0, parseInt(req.body.targetDrawings, 10) || 0);
+    // Drawings already delivered on this project before it started being
+    // tracked in the app — added to the in-app completed count so progress
+    // % reflects reality for projects that were already underway.
+    const startingDrawings = Math.max(0, parseInt(req.body.startingDrawings, 10) || 0);
     let saved;
     await updateTabSafe('ProjectTargets', rows => {
       let row = rows.find(r => r.zone === zone && r.project === project);
-      if (row) { row.targetDrawings = targetDrawings; } else { row = { id: genId('pt'), zone, project, targetDrawings }; rows.push(row); }
+      if (row) { row.targetDrawings = targetDrawings; row.startingDrawings = startingDrawings; }
+      else { row = { id: genId('pt'), zone, project, targetDrawings, startingDrawings }; rows.push(row); }
       saved = row;
       return rows;
     });
