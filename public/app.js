@@ -193,7 +193,7 @@
   async function enterApp(){
     document.getElementById('authOverlay').classList.remove('open');
     document.getElementById('appShell').style.display = 'flex';
-    document.getElementById('chatBubbleBtn').style.display = 'flex';
+    document.getElementById('chatBubbleBtn').style.display = isViewer() ? 'none' : 'flex';
     activeTab = 'board';
     clearUndo();
     await refreshState();
@@ -2162,7 +2162,7 @@
   let chatLastSignature = null; // used to skip re-rendering the message list when nothing changed (avoids flicker)
 
   function chatChannelOptions(){
-    if(isOwner() || isViewer()) return state.teams;
+    if(isOwner()) return state.teams;
     return state.teams.filter(t=>t.id===session.teamId);
   }
 
@@ -2186,7 +2186,7 @@
   function closeChatFloat(){
     chatPanelOpen = false;
     document.getElementById('chatFloatPanel').style.display = 'none';
-    if(session) document.getElementById('chatBubbleBtn').style.display = 'flex';
+    if(session && !isViewer()) document.getElementById('chatBubbleBtn').style.display = 'flex';
     if(chatPollTimer){ clearInterval(chatPollTimer); chatPollTimer = null; }
   }
   document.getElementById('chatBubbleBtn').addEventListener('click', toggleChatFloat);
@@ -2195,7 +2195,7 @@
   function renderChatShell(){
     const el = document.getElementById('chatFloatBody');
     const options = chatChannelOptions();
-    const showSwitcher = isOwner() || isViewer();
+    const showSwitcher = isOwner();
     const channelRow = showSwitcher ? `
       <div class="chat-channel-row">
         ${options.map(t=>`<button type="button" class="chat-channel-btn ${t.id===chatTeamId?'active':''}" data-team="${t.id}">${escapeHtml(t.name)}</button>`).join('')}
