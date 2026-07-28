@@ -316,6 +316,7 @@
     document.getElementById('tabCapacityBtn').style.display = isLeaderLike() ? 'inline-block' : 'none';
     document.getElementById('myStatsBtn').style.display = (isOwner() || isViewer()) ? 'none' : 'inline-block';
     document.getElementById('board').style.display='none';
+    document.getElementById('doneFilterBar').style.display='none';
     document.getElementById('ganttView').style.display='none';
     document.getElementById('dashboardView').style.display='none';
     document.getElementById('logView').style.display='none';
@@ -324,7 +325,9 @@
     if(activeTab==='board'){
       document.getElementById('viewTitle').textContent = isLeaderLike() ? "This Week's Jobs" : 'My Tasks';
       document.getElementById('board').style.display='flex';
+      document.getElementById('doneFilterBar').style.display='flex';
       document.getElementById('newTaskBtn').style.display = canCreateTasks() ? 'inline-block' : 'none';
+      populateDoneMonthFilter();
       renderBoard();
     } else if(activeTab==='gantt'){
       document.getElementById('viewTitle').textContent = 'Gantt';
@@ -689,6 +692,45 @@
   });
 
   // ---------- BOARD ----------
+  // ---------- DONE COLUMN MONTH FILTER ----------
+  // Only the Done column gets decluttered by this — To Do/In Progress/
+  // Submitted always show everything (that's active work, not backlog).
+  // Filters by completedAt (a single fixed date the task actually closed
+  // on), never by startDate/endDate, so a task spanning a month boundary
+  // is never ambiguous about which month it belongs to.
+  let doneMonthFilter = null; // 'YYYY-MM', or 'all'; defaults to the current month on first render
+  function currentMonthStr(){
+    const d = new Date();
+    return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0');
+  }
+  function formatMonthLabel(m){
+    const [y,mo] = m.split('-').map(Number);
+    return new Date(y, mo-1, 1).toLocaleDateString([], {month:'long', year:'numeric'});
+  }
+  function populateDoneMonthFilter(){
+    const doneTasks = (state.tasks||[]).filter(t=>t.status==='done' && t.completedAt);
+    const months = new Set(doneTasks.map(t=>t.completedAt.slice(0,7)));
+    const current = currentMonthStr();
+    months.add(current);
+    if(doneMonthFilter===null) doneMonthFilter = current; // declutter by default: show only this month's completed work
+    const sorted = Array.from(months).sort().reverse();
+    const sel = document.getElementById('doneMonthFilter');
+    sel.innerHTML = sorted.map(m=>`<option value="${m}">${formatMonthLabel(m)}</option>`).join('') + `<option value="all">All time</option>`;
+    sel.value = doneMonthFilter;
+    document.getElementById('doneShowAllBtn').style.display = doneMonthFilter==='all' ? 'none' : 'inline-block';
+  }
+  document.getElementById('doneMonthFilter').addEventListener('change', (e)=>{
+    doneMonthFilter = e.target.value;
+    document.getElementById('doneShowAllBtn').style.display = doneMonthFilter==='all' ? 'none' : 'inline-block';
+    renderBoard();
+  });
+  document.getElementById('doneShowAllBtn').addEventListener('click', ()=>{
+    doneMonthFilter = 'all';
+    document.getElementById('doneMonthFilter').value = 'all';
+    document.getElementById('doneShowAllBtn').style.display = 'none';
+    renderBoard();
+  });
+
   function visibleTasks(){
     const q = document.getElementById('searchBox').value.trim().toLowerCase();
     let base = state.tasks;
@@ -708,7 +750,11 @@
     board.innerHTML = '';
     const tasks = visibleTasks();
     COLUMNS.forEach((col, colIdx)=>{
-      const colTasks = tasks.filter(t=>t.status===col.key).sort((a,b)=>{
+      let colBase = tasks.filter(t=>t.status===col.key);
+      if(col.key==='done' && doneMonthFilter && doneMonthFilter!=='all'){
+        colBase = colBase.filter(t=> (t.completedAt||'').slice(0,7)===doneMonthFilter);
+      }
+      const colTasks = colBase.sort((a,b)=>{
         const aEnd = a.endDate || '9999-99-99';
         const bEnd = b.endDate || '9999-99-99';
         return aEnd < bEnd ? -1 : aEnd > bEnd ? 1 : 0;
@@ -723,7 +769,9 @@
       `;
       const cardsEl = column.querySelector('.cards');
       if(colTasks.length===0){
-        const empty=document.createElement('div'); empty.className='empty-col'; empty.textContent='Nothing here yet'; cardsEl.appendChild(empty);
+        const empty=document.createElement('div'); empty.className='empty-col';
+        empty.textContent = (col.key==='done' && doneMonthFilter && doneMonthFilter!=='all') ? 'Nothing completed this month' : 'Nothing here yet';
+        cardsEl.appendChild(empty);
       } else {
         colTasks.forEach(t=> cardsEl.appendChild(renderTicket(t, colIdx)));
       }
