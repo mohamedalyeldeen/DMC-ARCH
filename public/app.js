@@ -846,7 +846,7 @@
         ${t.description? `<div class="ticket-desc">${escapeHtml(t.description)}</div>`:''}
         <div class="ticket-meta">
           <div class="ticket-assignee">${member? `<div class="avatar" style="width:18px;height:18px;font-size:8px;background:${member.color};">${initials(member.name)}</div><span>${escapeHtml(member.name)}</span>`:'<span style="color:var(--text-dim-on-paper);">Unassigned</span>'}</div>
-          <div class="ticket-due ${overdue?'overdue':''}">${overdue?'⚠ ':''}${t.startDate && t.endDate ? fmtDate(t.startDate)+' → '+fmtDate(t.endDate) : 'No dates set'}</div>
+          <div class="ticket-due ${overdue?'overdue':''}">${overdue?'⚠ ':''}${colIdx===3 ? (t.completedAt? 'Completed '+fmtDate(t.completedAt) : 'Completed date unknown') : (t.startDate && t.endDate ? fmtDate(t.startDate)+' → '+fmtDate(t.endDate) : 'No dates set')}</div>
         </div>
         ${checklistHtml}
         <div class="lifecycle">${dots}</div>
