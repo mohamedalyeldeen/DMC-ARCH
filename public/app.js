@@ -14,7 +14,8 @@
   let capacitySortMode = 'availability'; // 'availability' | 'capacity'
   let evaFilters = { engineer:'', team:'', from:'', to:'' };
   let modalOpenFlag = false;
-  let checklistEditorItems = []; // [{id?, text, done}] — working copy while the task modal is open
+  // no working-copy needed anymore — checklists are 100% template-driven,
+  // read directly from state.taxonomy.checklistTemplates / the task record
   let pollTimer = null;
 
   // Undo: an in-memory stack of {label, restore} for this browser tab only.
@@ -1048,7 +1049,9 @@
       document.getElementById('fAutoSchedule').checked=false;
       // Auto-schedule only applies when creating a brand new task.
       document.getElementById('autoScheduleField').style.display='none';
-      checklistEditorItems = Array.isArray(t.checklist) ? t.checklist.map(c=>({id:c.id, text:c.text, done:!!c.done})) : [];
+      updateTaskItemField();
+      document.getElementById('fTaskItem').value = t.taskItem || '';
+      renderChecklistPreview(Array.isArray(t.checklist) ? t.checklist : []);
     } else {
       document.getElementById('modalTitle').textContent='Assign a new task';
       document.getElementById('saveTaskBtn').textContent='Assign task';
@@ -1067,9 +1070,8 @@
       document.getElementById('fAutoSchedule').checked=false;
       document.getElementById('autoScheduleField').style.display='block';
       populateInsertAfterOptions(document.getElementById('fAssignee').value);
-      checklistEditorItems = [];
+      updateTaskItemField();
     }
-    renderChecklistEditor();
     toggleAutoScheduleFields();
     document.getElementById('taskFieldsError').classList.remove('show');
     document.getElementById('dateFieldError').classList.remove('show');
@@ -1079,41 +1081,53 @@
   }
   function closeTaskModal(){ document.getElementById('modalOverlay').classList.remove('open'); modalOpenFlag=false; }
 
-  // ---------- CHECKLIST EDITOR (inside the task modal) ----------
-  function renderChecklistEditor(){
-    const wrap = document.getElementById('checklistEditorItems');
-    wrap.innerHTML = checklistEditorItems.map((it,i)=>`
-      <div class="checklist-edit-row" data-idx="${i}">
-        <input type="checkbox" class="cl-edit-done" ${it.done?'checked':''}>
-        <input type="text" class="cl-edit-text" value="${escapeHtml(it.text)}" maxlength="200">
-        <button type="button" class="checklist-edit-remove" data-idx="${i}" title="Remove">✕</button>
+  // ---------- TASK ITEM + CHECKLIST PREVIEW (100% template-driven) ----------
+  // Nobody types a checklist by hand — picking a Task Item snapshots
+  // whatever's currently in that item's template (owner-managed via the
+  // ChecklistTemplates sheet tab). The Task Item field only appears at all
+  // when the selected Task Title has at least one item defined.
+  function availableTaskItems(taskType){
+    const templates = (state.taxonomy && state.taxonomy.checklistTemplates) || {};
+    return templates[taskType] ? Object.keys(templates[taskType]) : [];
+  }
+  function updateTaskItemField(){
+    const taskType = document.getElementById('fTaskType').value;
+    const items = availableTaskItems(taskType);
+    const itemField = document.getElementById('taskItemField');
+    const previewField = document.getElementById('checklistPreviewField');
+    const sel = document.getElementById('fTaskItem');
+    if(items.length===0){
+      itemField.style.display='none';
+      previewField.style.display='none';
+      sel.innerHTML = '<option value="">Select an item…</option>';
+      sel.value = '';
+      return;
+    }
+    itemField.style.display='block';
+    previewField.style.display='block';
+    sel.innerHTML = '<option value="">Select an item…</option>' + items.map(i=>`<option value="${escapeHtml(i)}">${escapeHtml(i)}</option>`).join('');
+    sel.value = '';
+    renderChecklistPreview([]);
+  }
+  function renderChecklistPreview(items){
+    const wrap = document.getElementById('checklistPreview');
+    if(!items || items.length===0){
+      wrap.innerHTML = '<div style="font-size:11.5px;color:var(--text-dim-on-paper);">No checklist yet — pick a Task Item above.</div>';
+      return;
+    }
+    wrap.innerHTML = items.map(it=>`
+      <div class="checklist-preview-row ${it.done?'done':''}">
+        <span class="cl-mark">${it.done?'✓':'○'}</span><span>${escapeHtml(it.text)}</span>
       </div>
     `).join('');
-    wrap.querySelectorAll('.cl-edit-done').forEach((cb,i)=>{
-      cb.addEventListener('change', ()=>{ checklistEditorItems[i].done = cb.checked; });
-    });
-    wrap.querySelectorAll('.cl-edit-text').forEach((inp,i)=>{
-      inp.addEventListener('input', ()=>{ checklistEditorItems[i].text = inp.value; });
-    });
-    wrap.querySelectorAll('.checklist-edit-remove').forEach(btn=>{
-      btn.addEventListener('click', ()=>{
-        checklistEditorItems.splice(parseInt(btn.dataset.idx,10), 1);
-        renderChecklistEditor();
-      });
-    });
   }
-  function addChecklistEditorItem(){
-    const input = document.getElementById('checklistNewItem');
-    const text = input.value.trim();
-    if(!text) return;
-    checklistEditorItems.push({text, done:false});
-    input.value = '';
-    renderChecklistEditor();
-    input.focus();
-  }
-  document.getElementById('checklistAddBtn').addEventListener('click', addChecklistEditorItem);
-  document.getElementById('checklistNewItem').addEventListener('keydown', (e)=>{
-    if(e.key==='Enter'){ e.preventDefault(); addChecklistEditorItem(); }
+  document.getElementById('fTaskType').addEventListener('change', updateTaskItemField);
+  document.getElementById('fTaskItem').addEventListener('change', ()=>{
+    const taskType = document.getElementById('fTaskType').value;
+    const item = document.getElementById('fTaskItem').value;
+    const templates = (state.taxonomy && state.taxonomy.checklistTemplates) || {};
+    const texts = (templates[taskType] && templates[taskType][item]) || [];
+    renderChecklistPreview(texts.map(text=>({text, done:false})));
   });
   document.getElementById('newTaskBtn').addEventListener('click', ()=>openTaskModal(null));
   document.getElementById('cancelModalBtn').addEventListener('click', closeTaskModal);
@@ -1136,6 +1150,7 @@
     const numDrawings = document.getElementById('fNumDrawings').value;
     const revisionNo = document.getElementById('fRevisionNo').value;
     const sheetFormat = document.getElementById('fSheetFormat').value;
+    const taskItem = document.getElementById('fTaskItem').value;
     const isAuto = document.getElementById('fAutoSchedule').checked && !id;
     if(!validateManualDates()) return;
     try{
@@ -1146,11 +1161,11 @@
           description: prevTask.description, assignee: prevTask.assignee,
           startDate: prevTask.startDate, endDate: prevTask.endDate,
           numDrawings: prevTask.numDrawings, revisionNo: prevTask.revisionNo, sheetFormat: prevTask.sheetFormat,
-          checklist: Array.isArray(prevTask.checklist) ? prevTask.checklist.map(c=>({id:c.id, text:c.text, done:c.done})) : []
+          taskItem: prevTask.taskItem || ''
         } : null;
         await api('PUT', '/api/tasks/'+id, {
           zone, project, building, taskType, description, assignee,
-          numDrawings, revisionNo, sheetFormat, checklist: checklistEditorItems,
+          numDrawings, revisionNo, sheetFormat, taskItem,
           startDate: document.getElementById('fStartDate').value || '',
           endDate: document.getElementById('fEndDate').value || '',
           allowOverlap: document.getElementById('fAllowOverlap').checked
@@ -1163,7 +1178,7 @@
       } else if(isAuto){
         const created = await api('POST', '/api/tasks', {
           zone, project, building, taskType, description, assignee,
-          numDrawings, revisionNo, sheetFormat, checklist: checklistEditorItems.map(c=>c.text),
+          numDrawings, revisionNo, sheetFormat, taskItem,
           mode: 'auto',
           durationDays: parseInt(document.getElementById('fDuration').value,10) || 1,
           insertAfterTaskId: document.getElementById('fInsertAfter').value || null
@@ -1175,7 +1190,7 @@
       } else {
         const created = await api('POST', '/api/tasks', {
           zone, project, building, taskType, description, assignee,
-          numDrawings, revisionNo, sheetFormat, checklist: checklistEditorItems.map(c=>c.text),
+          numDrawings, revisionNo, sheetFormat, taskItem,
           startDate: document.getElementById('fStartDate').value || '',
           endDate: document.getElementById('fEndDate').value || '',
           allowOverlap: document.getElementById('fAllowOverlap').checked

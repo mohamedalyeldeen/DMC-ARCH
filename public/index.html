@@ -125,13 +125,13 @@
         <div class="field"></div>
       </div>
       <div class="field"><label>Details</label><textarea id="fDesc" maxlength="400" placeholder="What needs to get done…"></textarea></div>
-      <div class="field">
-        <label>Checklist <span style="text-transform:none;font-weight:400;">(must all be checked before this can move to "Submitted for Review")</span></label>
-        <div id="checklistEditorItems"></div>
-        <div style="display:flex;gap:8px;margin-top:6px;">
-          <input type="text" id="checklistNewItem" placeholder="Add a checklist item…" maxlength="200" style="flex:1;">
-          <button type="button" class="ghost-btn" id="checklistAddBtn">+ Add</button>
-        </div>
+      <div class="field" id="taskItemField" style="display:none;">
+        <label>Task Item</label>
+        <select id="fTaskItem"><option value="">Select an item…</option></select>
+      </div>
+      <div class="field" id="checklistPreviewField" style="display:none;">
+        <label>Checklist <span style="text-transform:none;font-weight:400;">(from the template — must all be checked before this can move to "Submitted for Review")</span></label>
+        <div id="checklistPreview" style="max-height:180px;overflow-y:auto;border:1px solid var(--line-on-paper);border-radius:4px;padding:8px 10px;"></div>
       </div>
       <div class="field"><label>Assign to</label><select id="fAssignee"></select></div>
       <div class="field" id="autoScheduleField">
