@@ -421,6 +421,51 @@ app.post('/api/project-targets', requireAuth, requireOwner, async (req, res) => 
   } catch (e) { sendErr(res, e); }
 });
 
+// ---------- GROUP CHAT ----------
+// One channel per team (the 4 existing groups). Any member of a team can
+// read/post in their own team's channel; the owner and viewers can
+// read/switch between all four for oversight (viewers are read-only, same
+// as everywhere else in the app).
+function allowedChatTeamIds(user, teamsAll) {
+  if (user.role === 'owner' || user.isViewer) return teamsAll.map(t => t.id);
+  return user.teamId ? [user.teamId] : [];
+}
+
+app.get('/api/messages', requireAuth, async (req, res) => {
+  try {
+    const teamId = req.query.teamId;
+    if (!teamId) throw new Error('BAD_REQUEST');
+    const teamsAll = await readTab('Teams');
+    if (!allowedChatTeamIds(req.user, teamsAll).includes(teamId)) throw new Error('FORBIDDEN');
+    const all = await readTab('Messages').catch(() => []);
+    const messages = all.filter(m => m.teamId === teamId)
+      .sort((a, b) => (a.createdAt || '').localeCompare(b.createdAt || ''))
+      .slice(-200); // cap history so the channel doesn't grow unbounded per poll
+    res.json({ messages, teams: teamsAll });
+  } catch (e) { sendErr(res, e); }
+});
+
+app.post('/api/messages', requireAuth, async (req, res) => {
+  try {
+    if (req.user.isViewer) throw new Error('FORBIDDEN');
+    const { teamId, text } = req.body;
+    if (!teamId || !text || !text.trim()) throw new Error('BAD_REQUEST');
+    const trimmed = text.trim().slice(0, 2000);
+    const teamsAll = await readTab('Teams');
+    if (!allowedChatTeamIds(req.user, teamsAll).includes(teamId)) throw new Error('FORBIDDEN');
+    let saved;
+    await updateTabSafe('Messages', rows => {
+      saved = {
+        id: genId('msg'), teamId, senderId: req.user.id || 'owner',
+        senderName: req.user.name || 'Someone', text: trimmed, createdAt: new Date().toISOString()
+      };
+      rows.push(saved);
+      return rows;
+    });
+    res.json(saved);
+  } catch (e) { sendErr(res, e); }
+});
+
 app.get('/api/state', requireAuth, async (req, res) => {
   try {
     const [teamsAll, membersRaw, tasksAll] = await Promise.all([readTab('Teams'), readTab('Members'), readTab('Tasks')]);
