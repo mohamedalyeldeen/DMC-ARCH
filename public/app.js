@@ -193,6 +193,7 @@
   async function enterApp(){
     document.getElementById('authOverlay').classList.remove('open');
     document.getElementById('appShell').style.display = 'flex';
+    document.getElementById('chatBubbleBtn').style.display = 'flex';
     activeTab = 'board';
     clearUndo();
     await refreshState();
@@ -205,6 +206,8 @@
     clearUndo();
     capacityLoaded = false;
     capacityData = [];
+    closeChatFloat();
+    document.getElementById('chatBubbleBtn').style.display = 'none';
     document.getElementById('appShell').style.display = 'none';
     document.getElementById('authOverlay').classList.add('open');
     document.getElementById('ownerPwInput').value='';
@@ -315,9 +318,7 @@
     document.getElementById('dashboardView').style.display='none';
     document.getElementById('logView').style.display='none';
     document.getElementById('prodDashboardView').style.display='none';
-    document.getElementById('chatView').style.display='none';
     document.getElementById('capacityView').style.display='none';
-    if(activeTab!=='chat') stopChatPolling();
     if(activeTab==='board'){
       document.getElementById('viewTitle').textContent = isLeaderLike() ? "This Week's Jobs" : 'My Tasks';
       document.getElementById('board').style.display='flex';
@@ -343,11 +344,6 @@
       document.getElementById('prodDashboardView').style.display='block';
       document.getElementById('newTaskBtn').style.display='none';
       renderProductivityDashboard();
-    } else if(activeTab==='chat'){
-      document.getElementById('viewTitle').textContent = 'Chat';
-      document.getElementById('chatView').style.display='block';
-      document.getElementById('newTaskBtn').style.display='none';
-      openChat();
     } else {
       document.getElementById('viewTitle').textContent = 'Capacity';
       document.getElementById('capacityView').style.display='block';
@@ -440,7 +436,7 @@
     catch(e){ alert(e.message); }
   });
 
-  const ALL_TAB_BTNS = ['tabBoardBtn','tabGanttBtn','tabDashBtn','tabLogBtn','tabProdDashBtn','tabChatBtn','tabCapacityBtn'];
+  const ALL_TAB_BTNS = ['tabBoardBtn','tabGanttBtn','tabDashBtn','tabLogBtn','tabProdDashBtn','tabCapacityBtn'];
   function activateTab(name, btnId){
     activeTab = name;
     ALL_TAB_BTNS.forEach(id=> document.getElementById(id).classList.toggle('active', id===btnId));
@@ -451,7 +447,6 @@
   document.getElementById('tabDashBtn').addEventListener('click', ()=> activateTab('dashboard','tabDashBtn'));
   document.getElementById('tabLogBtn').addEventListener('click', ()=> activateTab('log','tabLogBtn'));
   document.getElementById('tabProdDashBtn').addEventListener('click', ()=> activateTab('proddash','tabProdDashBtn'));
-  document.getElementById('tabChatBtn').addEventListener('click', ()=> activateTab('chat','tabChatBtn'));
   document.getElementById('tabCapacityBtn').addEventListener('click', ()=> activateTab('capacity','tabCapacityBtn'));
 
   function renderStats(){
@@ -2155,39 +2150,50 @@
     wireLogInteractions();
   }
 
-  // ---------- CHAT (group channels, one per team) ----------
-  // Regular members/leads/seniors only ever see their own team's channel;
-  // owner and viewers can switch between all four for oversight (viewers
-  // are read-only, same as everywhere else). Polls a bit faster than the
-  // rest of the app (every 4s) but only while this tab is actually open —
-  // stopChatPolling() is called the moment the person navigates away.
+  // ---------- CHAT (floating widget, group channels one per team) ----------
+  // Available from any tab via the floating bubble button — not a page you
+  // have to navigate to. Regular members/leads/seniors only ever see their
+  // own team's channel; owner and viewers can switch between all four for
+  // oversight (viewers are read-only). Polls a bit faster than the rest of
+  // the app (every 4s) but only while the panel is actually open.
   let chatTeamId = null;
   let chatPollTimer = null;
-  let chatShellBuilt = false;
-
-  function stopChatPolling(){
-    if(chatPollTimer){ clearInterval(chatPollTimer); chatPollTimer = null; }
-    chatShellBuilt = false;
-  }
+  let chatPanelOpen = false;
+  let chatLastSignature = null; // used to skip re-rendering the message list when nothing changed (avoids flicker)
 
   function chatChannelOptions(){
     if(isOwner() || isViewer()) return state.teams;
     return state.teams.filter(t=>t.id===session.teamId);
   }
 
-  function openChat(){
+  function toggleChatFloat(){
+    if(chatPanelOpen) closeChatFloat(); else openChatFloat();
+  }
+  function openChatFloat(){
+    chatPanelOpen = true;
+    document.getElementById('chatFloatPanel').style.display = 'flex';
+    document.getElementById('chatBubbleBtn').style.display = 'none';
     const options = chatChannelOptions();
     if(!chatTeamId || !options.some(t=>t.id===chatTeamId)){
       chatTeamId = options[0] ? options[0].id : null;
     }
+    chatLastSignature = null;
     renderChatShell();
     loadChatMessages(true);
     if(chatPollTimer) clearInterval(chatPollTimer);
     chatPollTimer = setInterval(()=>loadChatMessages(false), 4000);
   }
+  function closeChatFloat(){
+    chatPanelOpen = false;
+    document.getElementById('chatFloatPanel').style.display = 'none';
+    if(session) document.getElementById('chatBubbleBtn').style.display = 'flex';
+    if(chatPollTimer){ clearInterval(chatPollTimer); chatPollTimer = null; }
+  }
+  document.getElementById('chatBubbleBtn').addEventListener('click', toggleChatFloat);
+  document.getElementById('chatFloatCloseBtn').addEventListener('click', closeChatFloat);
 
   function renderChatShell(){
-    const el = document.getElementById('chatView');
+    const el = document.getElementById('chatFloatBody');
     const options = chatChannelOptions();
     const showSwitcher = isOwner() || isViewer();
     const channelRow = showSwitcher ? `
@@ -2212,6 +2218,7 @@
       el.querySelectorAll('.chat-channel-btn').forEach(btn=>{
         btn.addEventListener('click', ()=>{
           chatTeamId = btn.dataset.team;
+          chatLastSignature = null;
           renderChatShell();
           loadChatMessages(true);
         });
@@ -2227,6 +2234,7 @@
         try{
           await api('POST','/api/messages',{teamId:chatTeamId, text});
           input.value='';
+          chatLastSignature = null;
           await loadChatMessages(true);
         }catch(e){ alert(e.message); }
         finally{ sendBtn.disabled = false; input.focus(); }
@@ -2236,17 +2244,22 @@
         if(e.key==='Enter' && !e.shiftKey){ e.preventDefault(); send(); }
       });
     }
-    chatShellBuilt = true;
   }
 
   async function loadChatMessages(forceScroll){
-    if(!chatTeamId) return;
+    if(!chatTeamId || !chatPanelOpen) return;
     const listEl = document.getElementById('chatMessages');
     if(!listEl) return;
-    const wasAtBottom = listEl.scrollTop + listEl.clientHeight >= listEl.scrollHeight - 20;
     try{
       const data = await api('GET', '/api/messages?teamId='+encodeURIComponent(chatTeamId));
       const msgs = data.messages || [];
+      // Skip touching the DOM entirely if nothing actually changed — this
+      // is what was causing the visible "blinking": re-rendering identical
+      // content on every 4s poll retriggers layout/paint for no reason.
+      const signature = chatTeamId+'|'+msgs.length+'|'+(msgs[msgs.length-1] ? msgs[msgs.length-1].id : '');
+      if(signature === chatLastSignature && !forceScroll) return;
+      chatLastSignature = signature;
+      const wasAtBottom = listEl.scrollTop + listEl.clientHeight >= listEl.scrollHeight - 20;
       listEl.innerHTML = msgs.map(m=>{
         const own = session && m.senderId===session.id;
         return `
@@ -2259,7 +2272,7 @@
       }).join('') || '<div class="notif-empty">No messages yet — say hi.</div>';
       if(forceScroll || wasAtBottom) listEl.scrollTop = listEl.scrollHeight;
     }catch(e){
-      if(!chatShellBuilt) listEl.innerHTML = `<div class="notif-empty">${escapeHtml(e.message)}</div>`;
+      if(chatLastSignature===null) listEl.innerHTML = `<div class="notif-empty">${escapeHtml(e.message)}</div>`;
     }
   }
 

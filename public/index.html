@@ -62,7 +62,6 @@
         <button class="tab-btn" id="tabDashBtn">Tasks Dashboard</button>
         <button class="tab-btn" id="tabLogBtn">Productivity</button>
         <button class="tab-btn" id="tabProdDashBtn">Productivity Dashboard</button>
-        <button class="tab-btn" id="tabChatBtn">Chat</button>
         <button class="tab-btn" id="tabCapacityBtn" style="display:none;">Capacity</button>
       </div>
       <h1 id="viewTitle">This Week's Jobs</h1>
@@ -85,7 +84,6 @@
     <div class="dash-wrap" id="dashboardView" style="display:none;"></div>
     <div class="dash-wrap" id="logView" style="display:none;"></div>
     <div class="dash-wrap" id="prodDashboardView" style="display:none;"></div>
-    <div class="dash-wrap" id="chatView" style="display:none;"></div>
     <div class="dash-wrap" id="capacityView" style="display:none;"></div>
   </main>
 </div>
@@ -237,6 +235,15 @@
     <p id="celebrationMessage">Great job! You completed all of your assigned tasks on time. Keep up the excellent work!</p>
     <button type="button" class="celebration-continue" id="celebrationContinueBtn">Continue</button>
   </div>
+</div>
+
+<div id="chatBubbleBtn" class="chat-bubble-btn" style="display:none;">💬</div>
+<div id="chatFloatPanel" class="chat-float-panel" style="display:none;">
+  <div class="chat-float-header">
+    <span>Chat</span>
+    <button type="button" id="chatFloatCloseBtn" class="chat-float-close">✕</button>
+  </div>
+  <div class="chat-float-body" id="chatFloatBody"></div>
 </div>
 
 <script src="/app.js"></script>
