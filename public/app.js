@@ -359,8 +359,9 @@
     let label = '';
     if(isOwner()) label = (session.name || 'Owner') + ' (Owner)';
     else if(isViewer()) label = (session.name || 'Viewer') + ' (Viewer — read only)';
-    else if(isTeamLead()) label = 'Team Leader — ' + (teamById(session.teamId)||{name:''}).name;
-    else label = 'Member — ' + (teamById(session.teamId)||{name:''}).name;
+    else if(isTeamLead()) label = (session.name || 'Team Leader') + ' (Team Leader)';
+    else if(isSenior()) label = (session.name || 'Senior') + ' (Senior)';
+    else label = (session.name || 'Member') + ' (Member)';
     document.getElementById('roleBadge').textContent = label;
     document.getElementById('ownerNameBtn').style.display = isOwner() ? 'inline-block' : 'none';
   }
@@ -820,8 +821,17 @@
       cb.addEventListener('click', e=>e.stopPropagation());
       cb.addEventListener('change', async ()=>{
         try{
-          await api('POST', `/api/tasks/${t.id}/checklist/${cb.dataset.item}/toggle`, {});
-          await refreshState();
+          const updatedTask = await api('POST', `/api/tasks/${t.id}/checklist/${cb.dataset.item}/toggle`, {});
+          // Patch the task in place instead of re-fetching the whole board
+          // from Google Sheets — refreshState() here was firing a burst of
+          // Sheets API reads on every single checkbox click, which was
+          // enough to trip the "reads per minute" quota when checking off
+          // several items back to back.
+          ['tasks','dashboardTasks'].forEach(key=>{
+            const idx = state[key].findIndex(x=>x.id===updatedTask.id);
+            if(idx>-1) state[key][idx] = updatedTask;
+          });
+          renderApp();
         }catch(e){ alert(e.message); cb.checked = !cb.checked; }
       });
     });
