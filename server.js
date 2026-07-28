@@ -426,8 +426,13 @@ app.post('/api/project-targets', requireAuth, requireOwner, async (req, res) => 
 // read/post in their own team's channel; the owner and viewers can
 // read/switch between all four for oversight (viewers are read-only, same
 // as everywhere else in the app).
+// One channel per team (the 4 existing groups). Any member of a team can
+// read/post in their own team's channel; the owner can read/switch between
+// all four for oversight. Viewers get no chat access at all — read-only
+// oversight elsewhere in the app, but chat is excluded entirely.
 function allowedChatTeamIds(user, teamsAll) {
-  if (user.role === 'owner' || user.isViewer) return teamsAll.map(t => t.id);
+  if (user.isViewer) return [];
+  if (user.role === 'owner') return teamsAll.map(t => t.id);
   return user.teamId ? [user.teamId] : [];
 }
 
