@@ -698,7 +698,7 @@
   // Filters by completedAt (a single fixed date the task actually closed
   // on), never by startDate/endDate, so a task spanning a month boundary
   // is never ambiguous about which month it belongs to.
-  let doneMonthFilter = null; // 'YYYY-MM', or 'all'; defaults to the current month on first render
+  let doneMonthFilter = 'auto'; // 'auto' = always the real current month (recomputed live, never stale), a specific 'YYYY-MM', or 'all'
   function currentMonthStr(){
     const d = new Date();
     return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0');
@@ -707,15 +707,24 @@
     const [y,mo] = m.split('-').map(Number);
     return new Date(y, mo-1, 1).toLocaleDateString([], {month:'long', year:'numeric'});
   }
+  // The month actually applied to the Done column right now — resolves
+  // 'auto' to whatever today's real month is, computed fresh every call
+  // rather than cached, so a task completed after midnight on the 1st (or
+  // just after the browser tab has been open a while) shows up immediately
+  // without needing a page reload.
+  function effectiveDoneMonth(){
+    return doneMonthFilter==='auto' ? currentMonthStr() : doneMonthFilter;
+  }
   function populateDoneMonthFilter(){
     const doneTasks = (state.tasks||[]).filter(t=>t.status==='done' && t.completedAt);
     const months = new Set(doneTasks.map(t=>t.completedAt.slice(0,7)));
     const current = currentMonthStr();
     months.add(current);
-    if(doneMonthFilter===null) doneMonthFilter = current; // declutter by default: show only this month's completed work
     const sorted = Array.from(months).sort().reverse();
     const sel = document.getElementById('doneMonthFilter');
-    sel.innerHTML = sorted.map(m=>`<option value="${m}">${formatMonthLabel(m)}</option>`).join('') + `<option value="all">All time</option>`;
+    sel.innerHTML = `<option value="auto">This month (${formatMonthLabel(current)})</option>` +
+      sorted.filter(m=>m!==current).map(m=>`<option value="${m}">${formatMonthLabel(m)}</option>`).join('') +
+      `<option value="all">All time</option>`;
     sel.value = doneMonthFilter;
     document.getElementById('doneShowAllBtn').style.display = doneMonthFilter==='all' ? 'none' : 'inline-block';
   }
@@ -751,8 +760,9 @@
     const tasks = visibleTasks();
     COLUMNS.forEach((col, colIdx)=>{
       let colBase = tasks.filter(t=>t.status===col.key);
-      if(col.key==='done' && doneMonthFilter && doneMonthFilter!=='all'){
-        colBase = colBase.filter(t=> (t.completedAt||'').slice(0,7)===doneMonthFilter);
+      if(col.key==='done' && doneMonthFilter!=='all'){
+        const month = effectiveDoneMonth();
+        colBase = colBase.filter(t=> (t.completedAt||'').slice(0,7)===month);
       }
       const colTasks = colBase.sort((a,b)=>{
         const aEnd = a.endDate || '9999-99-99';
@@ -770,7 +780,7 @@
       const cardsEl = column.querySelector('.cards');
       if(colTasks.length===0){
         const empty=document.createElement('div'); empty.className='empty-col';
-        empty.textContent = (col.key==='done' && doneMonthFilter && doneMonthFilter!=='all') ? 'Nothing completed this month' : 'Nothing here yet';
+        empty.textContent = (col.key==='done' && doneMonthFilter!=='all') ? 'Nothing completed this month' : 'Nothing here yet';
         cardsEl.appendChild(empty);
       } else {
         colTasks.forEach(t=> cardsEl.appendChild(renderTicket(t, colIdx)));
