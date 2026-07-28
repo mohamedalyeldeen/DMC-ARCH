@@ -315,7 +315,9 @@
     document.getElementById('dashboardView').style.display='none';
     document.getElementById('logView').style.display='none';
     document.getElementById('prodDashboardView').style.display='none';
+    document.getElementById('chatView').style.display='none';
     document.getElementById('capacityView').style.display='none';
+    if(activeTab!=='chat') stopChatPolling();
     if(activeTab==='board'){
       document.getElementById('viewTitle').textContent = isLeaderLike() ? "This Week's Jobs" : 'My Tasks';
       document.getElementById('board').style.display='flex';
@@ -341,6 +343,11 @@
       document.getElementById('prodDashboardView').style.display='block';
       document.getElementById('newTaskBtn').style.display='none';
       renderProductivityDashboard();
+    } else if(activeTab==='chat'){
+      document.getElementById('viewTitle').textContent = 'Chat';
+      document.getElementById('chatView').style.display='block';
+      document.getElementById('newTaskBtn').style.display='none';
+      openChat();
     } else {
       document.getElementById('viewTitle').textContent = 'Capacity';
       document.getElementById('capacityView').style.display='block';
@@ -433,7 +440,7 @@
     catch(e){ alert(e.message); }
   });
 
-  const ALL_TAB_BTNS = ['tabBoardBtn','tabGanttBtn','tabDashBtn','tabLogBtn','tabProdDashBtn','tabCapacityBtn'];
+  const ALL_TAB_BTNS = ['tabBoardBtn','tabGanttBtn','tabDashBtn','tabLogBtn','tabProdDashBtn','tabChatBtn','tabCapacityBtn'];
   function activateTab(name, btnId){
     activeTab = name;
     ALL_TAB_BTNS.forEach(id=> document.getElementById(id).classList.toggle('active', id===btnId));
@@ -444,6 +451,7 @@
   document.getElementById('tabDashBtn').addEventListener('click', ()=> activateTab('dashboard','tabDashBtn'));
   document.getElementById('tabLogBtn').addEventListener('click', ()=> activateTab('log','tabLogBtn'));
   document.getElementById('tabProdDashBtn').addEventListener('click', ()=> activateTab('proddash','tabProdDashBtn'));
+  document.getElementById('tabChatBtn').addEventListener('click', ()=> activateTab('chat','tabChatBtn'));
   document.getElementById('tabCapacityBtn').addEventListener('click', ()=> activateTab('capacity','tabCapacityBtn'));
 
   function renderStats(){
@@ -2145,6 +2153,124 @@
     const el = document.getElementById('logView');
     el.innerHTML = renderLogTable() + renderProductivitySection() + renderProjectProgressSection();
     wireLogInteractions();
+  }
+
+  // ---------- CHAT (group channels, one per team) ----------
+  // Regular members/leads/seniors only ever see their own team's channel;
+  // owner and viewers can switch between all four for oversight (viewers
+  // are read-only, same as everywhere else). Polls a bit faster than the
+  // rest of the app (every 4s) but only while this tab is actually open —
+  // stopChatPolling() is called the moment the person navigates away.
+  let chatTeamId = null;
+  let chatPollTimer = null;
+  let chatShellBuilt = false;
+
+  function stopChatPolling(){
+    if(chatPollTimer){ clearInterval(chatPollTimer); chatPollTimer = null; }
+    chatShellBuilt = false;
+  }
+
+  function chatChannelOptions(){
+    if(isOwner() || isViewer()) return state.teams;
+    return state.teams.filter(t=>t.id===session.teamId);
+  }
+
+  function openChat(){
+    const options = chatChannelOptions();
+    if(!chatTeamId || !options.some(t=>t.id===chatTeamId)){
+      chatTeamId = options[0] ? options[0].id : null;
+    }
+    renderChatShell();
+    loadChatMessages(true);
+    if(chatPollTimer) clearInterval(chatPollTimer);
+    chatPollTimer = setInterval(()=>loadChatMessages(false), 4000);
+  }
+
+  function renderChatShell(){
+    const el = document.getElementById('chatView');
+    const options = chatChannelOptions();
+    const showSwitcher = isOwner() || isViewer();
+    const channelRow = showSwitcher ? `
+      <div class="chat-channel-row">
+        ${options.map(t=>`<button type="button" class="chat-channel-btn ${t.id===chatTeamId?'active':''}" data-team="${t.id}">${escapeHtml(t.name)}</button>`).join('')}
+      </div>
+    ` : `<div class="chat-channel-row"><span style="font-size:12.5px;color:var(--text-dim-on-ink);">${escapeHtml((options[0]&&options[0].name)||'Your team')} channel</span></div>`;
+    const inputRow = isViewer() ? '' : `
+      <div class="chat-input-row">
+        <textarea id="chatInput" placeholder="Message your team…" maxlength="2000"></textarea>
+        <button type="button" class="chat-send-btn" id="chatSendBtn">Send</button>
+      </div>
+    `;
+    el.innerHTML = `
+      <div class="dash-card">
+        ${channelRow}
+        <div class="chat-messages" id="chatMessages"></div>
+        ${inputRow}
+      </div>
+    `;
+    if(showSwitcher){
+      el.querySelectorAll('.chat-channel-btn').forEach(btn=>{
+        btn.addEventListener('click', ()=>{
+          chatTeamId = btn.dataset.team;
+          renderChatShell();
+          loadChatMessages(true);
+        });
+      });
+    }
+    const sendBtn = document.getElementById('chatSendBtn');
+    const input = document.getElementById('chatInput');
+    if(sendBtn && input){
+      const send = async ()=>{
+        const text = input.value.trim();
+        if(!text || !chatTeamId) return;
+        sendBtn.disabled = true;
+        try{
+          await api('POST','/api/messages',{teamId:chatTeamId, text});
+          input.value='';
+          await loadChatMessages(true);
+        }catch(e){ alert(e.message); }
+        finally{ sendBtn.disabled = false; input.focus(); }
+      };
+      sendBtn.addEventListener('click', send);
+      input.addEventListener('keydown', (e)=>{
+        if(e.key==='Enter' && !e.shiftKey){ e.preventDefault(); send(); }
+      });
+    }
+    chatShellBuilt = true;
+  }
+
+  async function loadChatMessages(forceScroll){
+    if(!chatTeamId) return;
+    const listEl = document.getElementById('chatMessages');
+    if(!listEl) return;
+    const wasAtBottom = listEl.scrollTop + listEl.clientHeight >= listEl.scrollHeight - 20;
+    try{
+      const data = await api('GET', '/api/messages?teamId='+encodeURIComponent(chatTeamId));
+      const msgs = data.messages || [];
+      listEl.innerHTML = msgs.map(m=>{
+        const own = session && m.senderId===session.id;
+        return `
+          <div class="chat-msg ${own?'own':''}">
+            ${own?'':`<div class="chat-msg-sender">${escapeHtml(m.senderName||'Someone')}</div>`}
+            <div class="chat-msg-text">${escapeHtml(m.text||'')}</div>
+            <div class="chat-msg-time">${fmtDateTime(m.createdAt)}</div>
+          </div>
+        `;
+      }).join('') || '<div class="notif-empty">No messages yet — say hi.</div>';
+      if(forceScroll || wasAtBottom) listEl.scrollTop = listEl.scrollHeight;
+    }catch(e){
+      if(!chatShellBuilt) listEl.innerHTML = `<div class="notif-empty">${escapeHtml(e.message)}</div>`;
+    }
+  }
+
+  function fmtDateTime(iso){
+    if(!iso) return '';
+    const d = new Date(iso);
+    if(isNaN(d.getTime())) return '';
+    const now = new Date();
+    const sameDay = d.toDateString()===now.toDateString();
+    const timeStr = d.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
+    return sameDay ? timeStr : d.toLocaleDateString([], {month:'short', day:'numeric'}) + ' ' + timeStr;
   }
 
   function doExport(){
