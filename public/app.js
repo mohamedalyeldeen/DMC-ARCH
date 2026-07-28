@@ -2229,12 +2229,14 @@
   }
 
   function computeProjectProgress(zone, project){
-    const completed = doneTasksPool().filter(t=>t.zone===zone && t.project===project)
+    const inAppCompleted = doneTasksPool().filter(t=>t.zone===zone && t.project===project)
       .reduce((sum,t)=> sum + (parseInt(t.numDrawings,10)||0), 0);
     const targetRow = logTargets.find(t=>t.zone===zone && t.project===project);
     const target = targetRow ? (parseInt(targetRow.targetDrawings,10)||0) : 0;
+    const starting = targetRow ? (parseInt(targetRow.startingDrawings,10)||0) : 0;
+    const completed = inAppCompleted + starting;
     const pct = target>0 ? Math.min(100, Math.round((completed/target)*100)) : 0;
-    return {completed, target, pct};
+    return {inAppCompleted, starting, completed, target, pct};
   }
 
   function renderProjectProgressSection(){
@@ -2247,15 +2249,21 @@
         const targetField = isOwner()
           ? `<input type="number" min="0" class="target-input" data-zone="${escapeHtml(zone)}" data-project="${escapeHtml(project)}" value="${p.target}">`
           : `<span>${p.target || '—'}</span>`;
+        const startingField = isOwner()
+          ? `<input type="number" min="0" class="starting-input" data-zone="${escapeHtml(zone)}" data-project="${escapeHtml(project)}" value="${p.starting}">`
+          : `<span>${p.starting || 0}</span>`;
         cards.push(`
           <div class="prog-card">
             <div class="prog-zone">${escapeHtml(zone)}</div>
             <div class="prog-name">${escapeHtml(project)}</div>
             <div class="bar-track" style="width:100%;"><div class="bar-fill" style="width:${p.pct}%;"></div></div>
             <div class="prog-stats" style="margin-top:10px;">
-              <span>${p.completed} done</span>
+              <span>${p.completed} done${p.starting>0?` (${p.inAppCompleted} in-app + ${p.starting} before tracking)`:''}</span>
               <span>Target: ${targetField}</span>
               <span>${p.pct}%</span>
+            </div>
+            <div class="prog-stats" style="margin-top:6px;">
+              <span>Already delivered before tracking: ${startingField}</span>
             </div>
           </div>
         `);
@@ -2264,6 +2272,7 @@
     return `
       <div class="dash-card">
         <h3>Project Progress</h3>
+        <div style="font-size:11px;color:var(--text-dim-on-ink);margin-bottom:14px;">For projects that were already underway before this app, set "Already delivered before tracking" once so the % reflects reality — it's added on top of whatever gets completed in-app.</div>
         <div class="prog-grid">${cards.join('') || '<div class="notif-empty">No projects to show yet.</div>'}</div>
       </div>
     `;
@@ -2297,17 +2306,24 @@
       });
     });
 
+    async function saveProjectTarget(zoneVal, projectVal){
+      const targetInp = document.querySelector(`.target-input[data-zone="${CSS.escape(zoneVal)}"][data-project="${CSS.escape(projectVal)}"]`);
+      const startingInp = document.querySelector(`.starting-input[data-zone="${CSS.escape(zoneVal)}"][data-project="${CSS.escape(projectVal)}"]`);
+      const targetDrawings = targetInp ? (parseInt(targetInp.value,10)||0) : 0;
+      const startingDrawings = startingInp ? (parseInt(startingInp.value,10)||0) : 0;
+      try{
+        await api('POST','/api/project-targets',{zone: zoneVal, project: projectVal, targetDrawings, startingDrawings});
+        const existing = logTargets.find(t=>t.zone===zoneVal && t.project===projectVal);
+        if(existing){ existing.targetDrawings = targetDrawings; existing.startingDrawings = startingDrawings; }
+        else logTargets.push({zone: zoneVal, project: projectVal, targetDrawings, startingDrawings});
+        renderLogView();
+      }catch(e){ alert(e.message); }
+    }
     document.querySelectorAll('.target-input').forEach(inp=>{
-      inp.addEventListener('change', async ()=>{
-        const zoneVal = inp.dataset.zone, projectVal = inp.dataset.project;
-        const targetDrawings = parseInt(inp.value,10)||0;
-        try{
-          await api('POST','/api/project-targets',{zone: zoneVal, project: projectVal, targetDrawings});
-          const existing = logTargets.find(t=>t.zone===zoneVal && t.project===projectVal);
-          if(existing) existing.targetDrawings = targetDrawings; else logTargets.push({zone: zoneVal, project: projectVal, targetDrawings});
-          renderLogView();
-        }catch(e){ alert(e.message); }
-      });
+      inp.addEventListener('change', ()=> saveProjectTarget(inp.dataset.zone, inp.dataset.project));
+    });
+    document.querySelectorAll('.starting-input').forEach(inp=>{
+      inp.addEventListener('change', ()=> saveProjectTarget(inp.dataset.zone, inp.dataset.project));
     });
   }
 
