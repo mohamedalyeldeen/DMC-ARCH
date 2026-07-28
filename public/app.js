@@ -14,6 +14,7 @@
   let capacitySortMode = 'availability'; // 'availability' | 'capacity'
   let evaFilters = { engineer:'', team:'', from:'', to:'' };
   let modalOpenFlag = false;
+  let checklistEditorItems = []; // [{id?, text, done}] — working copy while the task modal is open
   let pollTimer = null;
 
   // Undo: an in-memory stack of {label, restore} for this browser tab only.
@@ -735,6 +736,8 @@
     });
   }
 
+  let expandedChecklists = new Set(); // ticket ids currently showing their checklist detail
+
   function renderTicket(t, colIdx){
     const el = document.createElement('div');
     el.className = 'ticket';
@@ -744,9 +747,34 @@
     const overdue = t.endDate && t.endDate < todayStr() && t.status!=='done';
     let dots=''; for(let i=0;i<COLUMNS.length;i++){ dots += `<span class="${i<=colIdx?'done':''}"></span>`; }
 
-    const canFwd = colIdx<COLUMNS.length-1 && canAdvance(t, colIdx);
+    const checklist = Array.isArray(t.checklist) ? t.checklist : [];
+    const checklistDoneCount = checklist.filter(c=>c.done).length;
+    const checklistComplete = checklist.length===0 || checklistDoneCount===checklist.length;
+    // Moving In Progress -> Submitted is blocked (server-enforced too) until
+    // every checklist item is checked off.
+    const blockedByChecklist = colIdx===1 && !checklistComplete;
+    const canFwd = colIdx<COLUMNS.length-1 && canAdvance(t, colIdx) && !blockedByChecklist;
     const canBack = colIdx>0 && canManageThisTask(t);
     const canEdit = canAssignThisTask(t);
+    const canToggleChecklist = (session && t.assignee===session.id) || canEdit;
+    const expanded = expandedChecklists.has(t.id);
+
+    const checklistHtml = checklist.length===0 ? '' : `
+      <div class="ticket-checklist-toggle ${checklistComplete?'complete':''}" data-act="toggle-checklist">
+        <span class="cl-progress-bar"><span class="cl-progress-fill" style="width:${Math.round((checklistDoneCount/checklist.length)*100)}%;"></span></span>
+        <span>${checklistDoneCount}/${checklist.length} checklist ${expanded?'▲':'▼'}</span>
+      </div>
+      ${expanded ? `
+        <div class="ticket-checklist-list">
+          ${checklist.map(c=>`
+            <label class="ticket-checklist-item ${c.done?'done':''}">
+              <input type="checkbox" class="cl-toggle" data-item="${c.id}" ${c.done?'checked':''} ${canToggleChecklist?'':'disabled'}>
+              <span>${escapeHtml(c.text)}</span>
+            </label>
+          `).join('')}
+        </div>
+      ` : ''}
+    `;
 
     el.innerHTML = `
       <div class="ticket-stub">
@@ -760,10 +788,11 @@
           <div class="ticket-assignee">${member? `<div class="avatar" style="width:18px;height:18px;font-size:8px;background:${member.color};">${initials(member.name)}</div><span>${escapeHtml(member.name)}</span>`:'<span style="color:var(--text-dim-on-paper);">Unassigned</span>'}</div>
           <div class="ticket-due ${overdue?'overdue':''}">${overdue?'⚠ ':''}${t.startDate && t.endDate ? fmtDate(t.startDate)+' → '+fmtDate(t.endDate) : 'No dates set'}</div>
         </div>
+        ${checklistHtml}
         <div class="lifecycle">${dots}</div>
         <div class="ticket-actions">
           ${colIdx>0? `<button class="tk-btn back" data-act="back" ${canBack?'':'disabled'}>◂ Back</button>`:''}
-          ${colIdx<COLUMNS.length-1? `<button class="tk-btn" data-act="forward" ${canFwd?'':'disabled'}>${nextActionLabel(colIdx)}</button>`:''}
+          ${colIdx<COLUMNS.length-1? `<button class="tk-btn" data-act="forward" ${canFwd?'':'disabled'} title="${blockedByChecklist?'Check off every checklist item first':''}">${nextActionLabel(colIdx)}</button>`:''}
           ${canEdit? `<button class="tk-btn back" data-act="edit" style="max-width:34px;flex:0 0 34px;">✎</button>`:''}
           ${canEdit? `<button class="tk-btn back" data-act="duplicate" style="max-width:34px;flex:0 0 34px;">⧉</button>`:''}
         </div>
@@ -776,9 +805,23 @@
         e.stopPropagation();
         const act = btn.dataset.act;
         if(act==='forward' && canFwd) await moveTask(t.id, COLUMNS[colIdx+1].key);
+        else if(act==='forward' && blockedByChecklist) alert('Check off every checklist item before submitting this for review.');
         else if(act==='back' && canBack) await moveTask(t.id, COLUMNS[colIdx-1].key);
         else if(act==='edit') openTaskModal(t.id);
         else if(act==='duplicate') openDuplicateModal(t.id);
+        else if(act==='toggle-checklist'){
+          if(expandedChecklists.has(t.id)) expandedChecklists.delete(t.id); else expandedChecklists.add(t.id);
+          renderBoard();
+        }
+      });
+    });
+    el.querySelectorAll('.cl-toggle').forEach(cb=>{
+      cb.addEventListener('click', e=>e.stopPropagation());
+      cb.addEventListener('change', async ()=>{
+        try{
+          await api('POST', `/api/tasks/${t.id}/checklist/${cb.dataset.item}/toggle`, {});
+          await refreshState();
+        }catch(e){ alert(e.message); cb.checked = !cb.checked; }
       });
     });
     return el;
@@ -1005,6 +1048,7 @@
       document.getElementById('fAutoSchedule').checked=false;
       // Auto-schedule only applies when creating a brand new task.
       document.getElementById('autoScheduleField').style.display='none';
+      checklistEditorItems = Array.isArray(t.checklist) ? t.checklist.map(c=>({id:c.id, text:c.text, done:!!c.done})) : [];
     } else {
       document.getElementById('modalTitle').textContent='Assign a new task';
       document.getElementById('saveTaskBtn').textContent='Assign task';
@@ -1023,7 +1067,9 @@
       document.getElementById('fAutoSchedule').checked=false;
       document.getElementById('autoScheduleField').style.display='block';
       populateInsertAfterOptions(document.getElementById('fAssignee').value);
+      checklistEditorItems = [];
     }
+    renderChecklistEditor();
     toggleAutoScheduleFields();
     document.getElementById('taskFieldsError').classList.remove('show');
     document.getElementById('dateFieldError').classList.remove('show');
@@ -1032,6 +1078,43 @@
     document.getElementById('modalOverlay').classList.add('open');
   }
   function closeTaskModal(){ document.getElementById('modalOverlay').classList.remove('open'); modalOpenFlag=false; }
+
+  // ---------- CHECKLIST EDITOR (inside the task modal) ----------
+  function renderChecklistEditor(){
+    const wrap = document.getElementById('checklistEditorItems');
+    wrap.innerHTML = checklistEditorItems.map((it,i)=>`
+      <div class="checklist-edit-row" data-idx="${i}">
+        <input type="checkbox" class="cl-edit-done" ${it.done?'checked':''}>
+        <input type="text" class="cl-edit-text" value="${escapeHtml(it.text)}" maxlength="200">
+        <button type="button" class="checklist-edit-remove" data-idx="${i}" title="Remove">✕</button>
+      </div>
+    `).join('');
+    wrap.querySelectorAll('.cl-edit-done').forEach((cb,i)=>{
+      cb.addEventListener('change', ()=>{ checklistEditorItems[i].done = cb.checked; });
+    });
+    wrap.querySelectorAll('.cl-edit-text').forEach((inp,i)=>{
+      inp.addEventListener('input', ()=>{ checklistEditorItems[i].text = inp.value; });
+    });
+    wrap.querySelectorAll('.checklist-edit-remove').forEach(btn=>{
+      btn.addEventListener('click', ()=>{
+        checklistEditorItems.splice(parseInt(btn.dataset.idx,10), 1);
+        renderChecklistEditor();
+      });
+    });
+  }
+  function addChecklistEditorItem(){
+    const input = document.getElementById('checklistNewItem');
+    const text = input.value.trim();
+    if(!text) return;
+    checklistEditorItems.push({text, done:false});
+    input.value = '';
+    renderChecklistEditor();
+    input.focus();
+  }
+  document.getElementById('checklistAddBtn').addEventListener('click', addChecklistEditorItem);
+  document.getElementById('checklistNewItem').addEventListener('keydown', (e)=>{
+    if(e.key==='Enter'){ e.preventDefault(); addChecklistEditorItem(); }
+  });
   document.getElementById('newTaskBtn').addEventListener('click', ()=>openTaskModal(null));
   document.getElementById('cancelModalBtn').addEventListener('click', closeTaskModal);
   document.getElementById('modalOverlay').addEventListener('click', (e)=>{ if(e.target.id==='modalOverlay') closeTaskModal(); });
@@ -1062,11 +1145,12 @@
           zone: prevTask.zone, project: prevTask.project, building: prevTask.building, taskType: prevTask.taskType,
           description: prevTask.description, assignee: prevTask.assignee,
           startDate: prevTask.startDate, endDate: prevTask.endDate,
-          numDrawings: prevTask.numDrawings, revisionNo: prevTask.revisionNo, sheetFormat: prevTask.sheetFormat
+          numDrawings: prevTask.numDrawings, revisionNo: prevTask.revisionNo, sheetFormat: prevTask.sheetFormat,
+          checklist: Array.isArray(prevTask.checklist) ? prevTask.checklist.map(c=>({id:c.id, text:c.text, done:c.done})) : []
         } : null;
         await api('PUT', '/api/tasks/'+id, {
           zone, project, building, taskType, description, assignee,
-          numDrawings, revisionNo, sheetFormat,
+          numDrawings, revisionNo, sheetFormat, checklist: checklistEditorItems,
           startDate: document.getElementById('fStartDate').value || '',
           endDate: document.getElementById('fEndDate').value || '',
           allowOverlap: document.getElementById('fAllowOverlap').checked
@@ -1079,7 +1163,7 @@
       } else if(isAuto){
         const created = await api('POST', '/api/tasks', {
           zone, project, building, taskType, description, assignee,
-          numDrawings, revisionNo, sheetFormat,
+          numDrawings, revisionNo, sheetFormat, checklist: checklistEditorItems.map(c=>c.text),
           mode: 'auto',
           durationDays: parseInt(document.getElementById('fDuration').value,10) || 1,
           insertAfterTaskId: document.getElementById('fInsertAfter').value || null
@@ -1091,7 +1175,7 @@
       } else {
         const created = await api('POST', '/api/tasks', {
           zone, project, building, taskType, description, assignee,
-          numDrawings, revisionNo, sheetFormat,
+          numDrawings, revisionNo, sheetFormat, checklist: checklistEditorItems.map(c=>c.text),
           startDate: document.getElementById('fStartDate').value || '',
           endDate: document.getElementById('fEndDate').value || '',
           allowOverlap: document.getElementById('fAllowOverlap').checked

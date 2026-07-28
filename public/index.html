@@ -125,6 +125,14 @@
         <div class="field"></div>
       </div>
       <div class="field"><label>Details</label><textarea id="fDesc" maxlength="400" placeholder="What needs to get done…"></textarea></div>
+      <div class="field">
+        <label>Checklist <span style="text-transform:none;font-weight:400;">(must all be checked before this can move to "Submitted for Review")</span></label>
+        <div id="checklistEditorItems"></div>
+        <div style="display:flex;gap:8px;margin-top:6px;">
+          <input type="text" id="checklistNewItem" placeholder="Add a checklist item…" maxlength="200" style="flex:1;">
+          <button type="button" class="ghost-btn" id="checklistAddBtn">+ Add</button>
+        </div>
+      </div>
       <div class="field"><label>Assign to</label><select id="fAssignee"></select></div>
       <div class="field" id="autoScheduleField">
         <label class="field-check"><input type="checkbox" id="fAutoSchedule"><span style="margin:0;text-transform:none;font-size:13px;">Auto-schedule into their queue (instead of picking dates)</span></label>
