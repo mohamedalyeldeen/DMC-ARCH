@@ -56,38 +56,47 @@ function normalizeNumDrawings(n) {
   return (isNaN(v) || v < 0) ? 0 : v;
 }
 
-// Builds a fresh checklist (all unchecked) from an array of item-text
-// strings, used on task creation. Silently drops anything that isn't a
-// non-empty string, and caps both item length and list length so a
-// malformed request can't bloat the sheet.
-function buildNewChecklist(raw) {
-  if (!Array.isArray(raw)) return [];
-  return raw
-    .filter(t => typeof t === 'string' && t.trim())
-    .slice(0, 50)
-    .map(t => ({ id: genId('cl'), text: t.trim().slice(0, 200), done: false }));
+// Reads the ChecklistTemplates tab and groups it into { taskType: { item:
+// [text, text, ...] } }. The set of "items" available for a given Task
+// Title is derived entirely from whatever distinct (taskType, item) pairs
+// exist in the sheet — an owner adding a new item name (or new taskType)
+// there is all it takes for it to show up as selectable, no code change.
+async function getChecklistTemplates() {
+  const rows = await readTab('ChecklistTemplates').catch(() => []);
+  const map = {};
+  rows.forEach(row => {
+    if (!row.taskType || !row.item || !row.text) return;
+    if (!map[row.taskType]) map[row.taskType] = {};
+    if (!map[row.taskType][row.item]) map[row.taskType][row.item] = [];
+    map[row.taskType][row.item].push(row);
+  });
+  Object.keys(map).forEach(tt => {
+    Object.keys(map[tt]).forEach(item => {
+      map[tt][item] = map[tt][item].sort((a, b) => (a.order || 0) - (b.order || 0)).map(r => r.text);
+    });
+  });
+  return map;
 }
 
-// Reconciles an edited checklist against the task's current one: items with
-// a matching existing id keep their done-state (unless the request itself
-// changes it), items without a recognized id are treated as brand-new
-// (assigned a fresh id, unchecked). This lets the edit modal freely
-// add/remove/reorder/rename items without accidentally resetting progress
-// the assignee already made on unrelated items.
-function reconcileChecklist(raw, existing) {
-  if (!Array.isArray(raw)) return Array.isArray(existing) ? existing : [];
-  const existingById = new Map((existing || []).map(c => [c.id, c]));
-  return raw
-    .filter(it => it && typeof it.text === 'string' && it.text.trim())
-    .slice(0, 50)
-    .map(it => {
-      const prior = it.id && existingById.get(it.id);
-      return {
-        id: prior ? prior.id : genId('cl'),
-        text: it.text.trim().slice(0, 200),
-        done: it.done !== undefined ? !!it.done : (prior ? !!prior.done : false)
-      };
-    });
+// Resolves the taskItem + checklist for a task being created or edited.
+// Checklists are 100% template-driven — nobody types a checklist item by
+// hand, ever; adding one means adding a row to ChecklistTemplates instead.
+// - If the (possibly just-changed) taskType has no templates at all, there's
+//   no Task Item and no checklist, full stop.
+// - If it does, a valid taskItem is required, and picking one snapshots
+//   the template's current text into fresh, unchecked checklist items.
+// - If the taskItem hasn't actually changed, the existing checklist (with
+//   whatever progress the assignee has made) is left untouched.
+async function resolveTaskItemAndChecklist(taskType, taskItemRaw, currentTaskItem, currentChecklist) {
+  const templates = await getChecklistTemplates();
+  const availableItems = templates[taskType] ? Object.keys(templates[taskType]) : [];
+  if (availableItems.length === 0) return { taskItem: '', checklist: [] };
+  const taskItem = (taskItemRaw || '').trim();
+  if (!taskItem || !availableItems.includes(taskItem)) throw new Error('BAD_REQUEST');
+  if (taskItem === currentTaskItem && Array.isArray(currentChecklist) && currentChecklist.length > 0) {
+    return { taskItem, checklist: currentChecklist };
+  }
+  return { taskItem, checklist: templates[taskType][taskItem].map(text => ({ id: genId('cl'), text, done: false })) };
 }
 
 // The display "title" everywhere else in the app (board cards, Gantt bars,
@@ -559,7 +568,8 @@ app.get('/api/state', requireAuth, async (req, res) => {
       }
     }
 
-    res.json({ teams, members, tasks, dashboardTasks, notifications, unreadCount, you: req.user, me, taxonomy: { zoneProjects: ZONE_PROJECTS, taskTypes: TASK_TYPES, revisionNumbers: REVISION_NUMBERS } });
+    const checklistTemplates = await getChecklistTemplates().catch(() => ({}));
+    res.json({ teams, members, tasks, dashboardTasks, notifications, unreadCount, you: req.user, me, taxonomy: { zoneProjects: ZONE_PROJECTS, taskTypes: TASK_TYPES, revisionNumbers: REVISION_NUMBERS, checklistTemplates } });
   } catch (e) { sendErr(res, e); }
 });
 
@@ -697,7 +707,7 @@ app.post('/api/tasks', requireAuth, requireAssigner, async (req, res) => {
     const numDrawings = normalizeNumDrawings(req.body.numDrawings);
     const revisionNo = normalizeRevisionNo(req.body.revisionNo);
     const sheetFormat = normalizeSheetFormat(req.body.sheetFormat);
-    const checklist = buildNewChecklist(req.body.checklist);
+    const { taskItem, checklist } = await resolveTaskItemAndChecklist(taskType, req.body.taskItem, '', []);
     const title = composeTaskTitle({ zone, project, building, taskType });
     if (req.user.role !== 'owner') {
       if (!assignee) throw new Error('FORBIDDEN');
@@ -729,7 +739,7 @@ app.post('/api/tasks', requireAuth, requireAssigner, async (req, res) => {
         due: endDate || '', status: 'todo', completedAt: '',
         startDate, endDate, sequence,
         zone, project, building: building || '', taskType,
-        numDrawings, revisionNo, sheetFormat, checklist,
+        numDrawings, revisionNo, sheetFormat, checklist, taskItem,
         history: [{ status: 'todo', at: today() }], createdAt: today()
       };
       rows.push(newTask);
@@ -751,13 +761,13 @@ app.put('/api/tasks/:id', requireAuth, requireAssigner, async (req, res) => {
     const numDrawings = req.body.numDrawings !== undefined ? normalizeNumDrawings(req.body.numDrawings) : undefined;
     const revisionNo = req.body.revisionNo !== undefined ? normalizeRevisionNo(req.body.revisionNo) : undefined;
     const sheetFormat = req.body.sheetFormat !== undefined ? normalizeSheetFormat(req.body.sheetFormat) : undefined;
-    const checklistRaw = req.body.checklist; // undefined = leave untouched; array = reconcile below (needs t.checklist, so handled inside updateTab)
+    const taskItemRaw = req.body.taskItem; // undefined = fall back to the task's current taskItem (see resolveTaskItemAndChecklist)
     let membersCache = null;
     if (req.user.role !== 'owner') membersCache = await readTab('Members');
     let updated;
     let wasReassigned = false;
     let wasUpdated = false;
-    await updateTab('Tasks', rows => {
+    await updateTab('Tasks', async rows => {
       const t = rows.find(r => r.id === req.params.id);
       if (!t) throw new Error('NOT_FOUND');
       if (req.user.role !== 'owner') {
@@ -799,6 +809,15 @@ app.put('/api/tasks/:id', requireAuth, requireAssigner, async (req, res) => {
         t.zone = nextZone; t.project = nextProject; t.building = nextBuilding || ''; t.taskType = nextTaskType;
         t.title = composeTaskTitle({ zone: nextZone, project: nextProject, building: nextBuilding, taskType: nextTaskType });
       }
+      // Task Item + checklist always tracks the (possibly just-changed)
+      // taskType. If neither the taskType nor the taskItem is actually
+      // changing, resolveTaskItemAndChecklist just hands back the existing
+      // checklist untouched (preserving whatever progress was checked off).
+      const resolved = await resolveTaskItemAndChecklist(
+        t.taskType, taskItemRaw !== undefined ? taskItemRaw : t.taskItem, t.taskItem, t.checklist
+      );
+      t.taskItem = resolved.taskItem;
+      t.checklist = resolved.checklist;
       t.description = description || '';
       t.assignee = newAssignee;
       t.startDate = newStart || '';
@@ -807,7 +826,6 @@ app.put('/api/tasks/:id', requireAuth, requireAssigner, async (req, res) => {
       if (numDrawings !== undefined) t.numDrawings = numDrawings;
       if (revisionNo !== undefined) t.revisionNo = revisionNo;
       if (sheetFormat !== undefined) t.sheetFormat = sheetFormat;
-      if (checklistRaw !== undefined) t.checklist = reconcileChecklist(checklistRaw, t.checklist);
 
       if (newAssignee !== prevAssignee) {
         t.sequence = newAssignee ? scheduler.nextSequence(rows, newAssignee) : 0;
@@ -901,7 +919,8 @@ app.post('/api/tasks/restore', requireAuth, requireLeader, async (req, res) => {
         sequence: snapshot.sequence || 0, history: snapshot.history || [], createdAt: snapshot.createdAt || today(),
         zone: snapshot.zone || '', project: snapshot.project || '', building: snapshot.building || '', taskType: snapshot.taskType || '',
         numDrawings: snapshot.numDrawings || 0, revisionNo: snapshot.revisionNo || '', sheetFormat: snapshot.sheetFormat || '',
-        checklist: Array.isArray(snapshot.checklist) ? snapshot.checklist : []
+        checklist: Array.isArray(snapshot.checklist) ? snapshot.checklist : [],
+        taskItem: snapshot.taskItem || ''
       };
       if (restoredTask.assignee) {
         scheduler.restoreRemovedTask(rows, restoredTask.assignee, restoredTask);
@@ -950,7 +969,8 @@ app.post('/api/tasks/:id/duplicate', requireAuth, requireAssigner, async (req, r
           history: [{ status: 'todo', at: today() }], createdAt: today(),
           zone: original.zone || '', project: original.project || '', building: original.building || '', taskType: original.taskType || '',
           numDrawings: original.numDrawings || 0, revisionNo: original.revisionNo || '', sheetFormat: original.sheetFormat || '',
-          checklist: Array.isArray(original.checklist) ? original.checklist.map(c => ({ id: genId('cl'), text: c.text, done: false })) : []
+          checklist: Array.isArray(original.checklist) ? original.checklist.map(c => ({ id: genId('cl'), text: c.text, done: false })) : [],
+          taskItem: original.taskItem || ''
         };
         rows.push(dup);
         created.push(dup);
