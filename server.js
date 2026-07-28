@@ -56,6 +56,40 @@ function normalizeNumDrawings(n) {
   return (isNaN(v) || v < 0) ? 0 : v;
 }
 
+// Builds a fresh checklist (all unchecked) from an array of item-text
+// strings, used on task creation. Silently drops anything that isn't a
+// non-empty string, and caps both item length and list length so a
+// malformed request can't bloat the sheet.
+function buildNewChecklist(raw) {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .filter(t => typeof t === 'string' && t.trim())
+    .slice(0, 50)
+    .map(t => ({ id: genId('cl'), text: t.trim().slice(0, 200), done: false }));
+}
+
+// Reconciles an edited checklist against the task's current one: items with
+// a matching existing id keep their done-state (unless the request itself
+// changes it), items without a recognized id are treated as brand-new
+// (assigned a fresh id, unchecked). This lets the edit modal freely
+// add/remove/reorder/rename items without accidentally resetting progress
+// the assignee already made on unrelated items.
+function reconcileChecklist(raw, existing) {
+  if (!Array.isArray(raw)) return Array.isArray(existing) ? existing : [];
+  const existingById = new Map((existing || []).map(c => [c.id, c]));
+  return raw
+    .filter(it => it && typeof it.text === 'string' && it.text.trim())
+    .slice(0, 50)
+    .map(it => {
+      const prior = it.id && existingById.get(it.id);
+      return {
+        id: prior ? prior.id : genId('cl'),
+        text: it.text.trim().slice(0, 200),
+        done: it.done !== undefined ? !!it.done : (prior ? !!prior.done : false)
+      };
+    });
+}
+
 // The display "title" everywhere else in the app (board cards, Gantt bars,
 // notifications, achievements, dashboard, search) stays a single string —
 // this composes it from the four structured fields so none of that other
@@ -113,7 +147,7 @@ function sendErr(res, e) {
   if (e.tabName) {
     return res.status(400).json({ error: `Your Google Sheet doesn't have a tab named exactly "${e.tabName}" yet. Add it (spelled exactly like that, case-sensitive) and try again — see the README.` });
   }
-  const map = { NOT_FOUND: 404, FORBIDDEN: 403, USERNAME_TAKEN: 409, BAD_REQUEST: 400, OVERLAP: 409, WEEKEND_DATE: 400 };
+  const map = { NOT_FOUND: 404, FORBIDDEN: 403, USERNAME_TAKEN: 409, BAD_REQUEST: 400, OVERLAP: 409, WEEKEND_DATE: 400, CHECKLIST_INCOMPLETE: 400 };
   const status = map[e.message] || 500;
   const messages = {
     NOT_FOUND: 'That record no longer exists.',
@@ -121,7 +155,8 @@ function sendErr(res, e) {
     USERNAME_TAKEN: 'That username is already taken.',
     BAD_REQUEST: 'Missing or invalid data.',
     OVERLAP: 'This overlaps with another task already scheduled for this person. Check "Allow Task Overlap" to schedule it anyway.',
-    WEEKEND_DATE: 'Friday and Saturday are non-working days — tasks can\'t start or end on one of those.'
+    WEEKEND_DATE: 'Friday and Saturday are non-working days — tasks can\'t start or end on one of those.',
+    CHECKLIST_INCOMPLETE: 'Check off every checklist item before submitting this for review.'
   };
   console.error(e);
   res.status(status).json({ error: messages[e.message] || `Something went wrong: ${e.message || 'unknown error'}` });
@@ -662,6 +697,7 @@ app.post('/api/tasks', requireAuth, requireAssigner, async (req, res) => {
     const numDrawings = normalizeNumDrawings(req.body.numDrawings);
     const revisionNo = normalizeRevisionNo(req.body.revisionNo);
     const sheetFormat = normalizeSheetFormat(req.body.sheetFormat);
+    const checklist = buildNewChecklist(req.body.checklist);
     const title = composeTaskTitle({ zone, project, building, taskType });
     if (req.user.role !== 'owner') {
       if (!assignee) throw new Error('FORBIDDEN');
@@ -693,7 +729,7 @@ app.post('/api/tasks', requireAuth, requireAssigner, async (req, res) => {
         due: endDate || '', status: 'todo', completedAt: '',
         startDate, endDate, sequence,
         zone, project, building: building || '', taskType,
-        numDrawings, revisionNo, sheetFormat,
+        numDrawings, revisionNo, sheetFormat, checklist,
         history: [{ status: 'todo', at: today() }], createdAt: today()
       };
       rows.push(newTask);
@@ -715,6 +751,7 @@ app.put('/api/tasks/:id', requireAuth, requireAssigner, async (req, res) => {
     const numDrawings = req.body.numDrawings !== undefined ? normalizeNumDrawings(req.body.numDrawings) : undefined;
     const revisionNo = req.body.revisionNo !== undefined ? normalizeRevisionNo(req.body.revisionNo) : undefined;
     const sheetFormat = req.body.sheetFormat !== undefined ? normalizeSheetFormat(req.body.sheetFormat) : undefined;
+    const checklistRaw = req.body.checklist; // undefined = leave untouched; array = reconcile below (needs t.checklist, so handled inside updateTab)
     let membersCache = null;
     if (req.user.role !== 'owner') membersCache = await readTab('Members');
     let updated;
@@ -770,6 +807,7 @@ app.put('/api/tasks/:id', requireAuth, requireAssigner, async (req, res) => {
       if (numDrawings !== undefined) t.numDrawings = numDrawings;
       if (revisionNo !== undefined) t.revisionNo = revisionNo;
       if (sheetFormat !== undefined) t.sheetFormat = sheetFormat;
+      if (checklistRaw !== undefined) t.checklist = reconcileChecklist(checklistRaw, t.checklist);
 
       if (newAssignee !== prevAssignee) {
         t.sequence = newAssignee ? scheduler.nextSequence(rows, newAssignee) : 0;
@@ -789,6 +827,32 @@ app.put('/api/tasks/:id', requireAuth, requireAssigner, async (req, res) => {
     } else if (wasUpdated) {
       await addNotification(updated.assignee, updated.id, 'updated', `Task updated: "${updated.title}"`, actorLabel(req.user));
     }
+    res.json(updated);
+  } catch (e) { sendErr(res, e); }
+});
+
+// Toggles a single checklist item's done state. Unlike editing the task
+// itself (assigner-only via PUT), this is also open to the task's own
+// assignee — they're the one actually doing the work and checking things
+// off, and they may well be a plain team member with no other edit rights
+// on the task at all.
+app.post('/api/tasks/:id/checklist/:itemId/toggle', requireAuth, async (req, res) => {
+  try {
+    let membersCache = null;
+    if (req.user.role !== 'owner') membersCache = await readTab('Members');
+    let updated;
+    await updateTab('Tasks', rows => {
+      const t = rows.find(r => r.id === req.params.id);
+      if (!t) throw new Error('NOT_FOUND');
+      const isSelf = !req.user.isViewer && t.assignee === req.user.id;
+      const canManage = req.user.role === 'owner' || (membersCache && canAssignTo(req.user, t.assignee, membersCache));
+      if (!isSelf && !canManage) throw new Error('FORBIDDEN');
+      const item = (t.checklist || []).find(c => c.id === req.params.itemId);
+      if (!item) throw new Error('NOT_FOUND');
+      item.done = !item.done;
+      updated = t;
+      return rows;
+    });
     res.json(updated);
   } catch (e) { sendErr(res, e); }
 });
@@ -836,7 +900,8 @@ app.post('/api/tasks/restore', requireAuth, requireLeader, async (req, res) => {
         startDate: snapshot.startDate || '', endDate: snapshot.endDate || '',
         sequence: snapshot.sequence || 0, history: snapshot.history || [], createdAt: snapshot.createdAt || today(),
         zone: snapshot.zone || '', project: snapshot.project || '', building: snapshot.building || '', taskType: snapshot.taskType || '',
-        numDrawings: snapshot.numDrawings || 0, revisionNo: snapshot.revisionNo || '', sheetFormat: snapshot.sheetFormat || ''
+        numDrawings: snapshot.numDrawings || 0, revisionNo: snapshot.revisionNo || '', sheetFormat: snapshot.sheetFormat || '',
+        checklist: Array.isArray(snapshot.checklist) ? snapshot.checklist : []
       };
       if (restoredTask.assignee) {
         scheduler.restoreRemovedTask(rows, restoredTask.assignee, restoredTask);
@@ -884,7 +949,8 @@ app.post('/api/tasks/:id/duplicate', requireAuth, requireAssigner, async (req, r
           sequence: assigneeId ? scheduler.nextSequence(rows, assigneeId) : 0,
           history: [{ status: 'todo', at: today() }], createdAt: today(),
           zone: original.zone || '', project: original.project || '', building: original.building || '', taskType: original.taskType || '',
-          numDrawings: original.numDrawings || 0, revisionNo: original.revisionNo || '', sheetFormat: original.sheetFormat || ''
+          numDrawings: original.numDrawings || 0, revisionNo: original.revisionNo || '', sheetFormat: original.sheetFormat || '',
+          checklist: Array.isArray(original.checklist) ? original.checklist.map(c => ({ id: genId('cl'), text: c.text, done: false })) : []
         };
         rows.push(dup);
         created.push(dup);
@@ -952,6 +1018,10 @@ app.post('/api/tasks/:id/move', requireAuth, async (req, res) => {
       if (!t) throw new Error('NOT_FOUND');
       const fromIdx = COLUMN_ORDER.indexOf(t.status);
       fromStatus = t.status;
+      if (fromStatus === 'inprogress' && status === 'submitted') {
+        const incomplete = Array.isArray(t.checklist) && t.checklist.some(c => !c.done);
+        if (incomplete) throw new Error('CHECKLIST_INCOMPLETE');
+      }
       let isLeaderForThis = req.user.role === 'owner';
       if (!isLeaderForThis && req.user.isTeamLead) {
         isLeaderForThis = canLeadAssignTo(req.user, t.assignee, membersCache);
