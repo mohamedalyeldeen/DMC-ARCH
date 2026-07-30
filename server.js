@@ -15,6 +15,23 @@ app.use(cors());
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
+// Holidays rarely change but every date-math route (task create/edit/move,
+// capacity, etc.) needs them loaded into the scheduler before it runs —
+// cached for 5 minutes so this doesn't add a Sheets read to every request.
+let holidaysCache = null;
+let holidaysCacheAt = 0;
+const HOLIDAYS_CACHE_MS = 5 * 60 * 1000;
+async function ensureHolidaysLoaded() {
+  if (holidaysCache && (Date.now() - holidaysCacheAt) < HOLIDAYS_CACHE_MS) return;
+  const rows = await readTab('Holidays').catch(() => []);
+  const dates = rows.map(r => r.date).filter(Boolean);
+  scheduler.setHolidays(dates);
+  holidaysCache = dates;
+  holidaysCacheAt = Date.now();
+}
+function invalidateHolidaysCache() { holidaysCache = null; }
+app.use((req, res, next) => { ensureHolidaysLoaded().catch(() => {}).then(() => next()); });
+
 const COLORS = ['#E2892B', '#3E7C74', '#7C6AA6', '#C4574B', '#4C7EA8', '#8A9A3B'];
 const COLUMN_ORDER = ['todo', 'inprogress', 'submitted', 'done'];
 
@@ -175,7 +192,7 @@ function sendErr(res, e) {
     USERNAME_TAKEN: 'That username is already taken.',
     BAD_REQUEST: 'Missing or invalid data.',
     OVERLAP: 'This overlaps with another task already scheduled for this person. Check "Allow Task Overlap" to schedule it anyway.',
-    WEEKEND_DATE: 'Friday and Saturday are non-working days — tasks can\'t start or end on one of those.',
+    WEEKEND_DATE: 'Friday/Saturday and public holidays are non-working days — tasks can\'t start or end on one of those.',
     CHECKLIST_INCOMPLETE: 'Check off every checklist item before submitting this for review.'
   };
   console.error(e);
@@ -631,9 +648,66 @@ async function checkOverdueEscalations() {
 // persistent scheduler to run one on a timer. Returns every tab's raw data
 // (minus password hashes) as one JSON payload the browser turns into a
 // downloadable file; the owner can re-run this any time (e.g. weekly).
+// ---------- LEAVE (sick leave pushes deadlines; other leave is record-only) ----------
+// Owner or team leader only — a team leader is restricted to their own
+// team's members (a narrower, purely team-based rule, separate from the
+// cross-team task-assignment reach they have elsewhere in the app).
+app.post('/api/leaves', requireAuth, requireLeader, async (req, res) => {
+  try {
+    const { memberId, startDate, endDate } = req.body;
+    if (!memberId || !startDate || !endDate || endDate < startDate) throw new Error('BAD_REQUEST');
+    const leaveType = req.body.type === 'sick' ? 'sick' : 'other';
+    const members = await readTab('Members');
+    const target = members.find(m => m.id === memberId);
+    if (!target) throw new Error('NOT_FOUND');
+    if (req.user.role !== 'owner' && target.teamId !== req.user.teamId) throw new Error('FORBIDDEN');
+
+    let shiftedDays = 0;
+    if (leaveType === 'sick') {
+      shiftedDays = scheduler.workingDaysInclusive(startDate, endDate);
+      if (shiftedDays > 0) {
+        await updateTab('Tasks', rows => {
+          scheduler.pushEngineerQueueForLeave(rows, memberId, shiftedDays);
+          return rows;
+        });
+      }
+    }
+    let saved;
+    await updateTabSafe('Leaves', rows => {
+      saved = {
+        id: genId('lv'), memberId, type: leaveType, startDate, endDate, shiftedDays,
+        registeredBy: req.user.name || 'Owner', createdAt: new Date().toISOString()
+      };
+      rows.push(saved);
+      return rows;
+    });
+    if (leaveType === 'sick' && shiftedDays > 0) {
+      await addNotification(memberId, '', 'leave', `Sick leave logged (${startDate} to ${endDate}) — your open tasks were pushed back ${shiftedDays} working day${shiftedDays===1?'':'s'}.`, actorLabel(req.user));
+    }
+    res.json(saved);
+  } catch (e) { sendErr(res, e); }
+});
+
+app.get('/api/leaves', requireAuth, async (req, res) => {
+  try {
+    const rows = await readTab('Leaves').catch(() => []);
+    let visible = rows;
+    if (req.user.role === 'member' && !req.user.isViewer) {
+      if (req.user.isTeamLead) {
+        const members = await readTab('Members');
+        const teamIds = new Set(members.filter(m => m.teamId === req.user.teamId).map(m => m.id));
+        visible = rows.filter(r => teamIds.has(r.memberId));
+      } else {
+        visible = rows.filter(r => r.memberId === req.user.id);
+      }
+    }
+    res.json({ leaves: visible });
+  } catch (e) { sendErr(res, e); }
+});
+
 app.get('/api/backup/export', requireAuth, requireOwner, async (req, res) => {
   try {
-    const tabs = ['Teams', 'Members', 'Tasks', 'Notifications', 'Achievements', 'WorkDays', 'ProjectTargets', 'Messages', 'ChecklistTemplates', 'Comments'];
+    const tabs = ['Teams', 'Members', 'Tasks', 'Notifications', 'Achievements', 'WorkDays', 'ProjectTargets', 'Messages', 'ChecklistTemplates', 'Comments', 'Holidays', 'Leaves'];
     const data = {};
     for (const tab of tabs) {
       const rows = await readTab(tab).catch(() => []);
@@ -698,7 +772,7 @@ app.get('/api/state', requireAuth, async (req, res) => {
     }
 
     const checklistTemplates = await getChecklistTemplates().catch(() => ({}));
-    res.json({ teams, members, tasks, dashboardTasks, notifications, unreadCount, you: req.user, me, taxonomy: { zoneProjects: ZONE_PROJECTS, taskTypes: TASK_TYPES, revisionNumbers: REVISION_NUMBERS, checklistTemplates } });
+    res.json({ teams, members, tasks, dashboardTasks, notifications, unreadCount, you: req.user, me, taxonomy: { zoneProjects: ZONE_PROJECTS, taskTypes: TASK_TYPES, revisionNumbers: REVISION_NUMBERS, checklistTemplates, holidays: holidaysCache || [] } });
   } catch (e) { sendErr(res, e); }
 });
 
@@ -1059,6 +1133,62 @@ app.post('/api/tasks/:id/checklist/:itemId/toggle', requireAuth, async (req, res
       return rows;
     });
     res.json(updated);
+  } catch (e) { sendErr(res, e); }
+});
+
+// Marks every checklist item on a task done (or, if they're all already
+// done, unchecks them all) in one atomic write — same permission rule as
+// the single-item toggle above.
+app.post('/api/tasks/:id/checklist/check-all', requireAuth, async (req, res) => {
+  try {
+    let membersCache = null;
+    if (req.user.role !== 'owner') membersCache = await readTab('Members');
+    let updated;
+    await updateTab('Tasks', rows => {
+      const t = rows.find(r => r.id === req.params.id);
+      if (!t) throw new Error('NOT_FOUND');
+      const isSelf = !req.user.isViewer && t.assignee === req.user.id;
+      const canManage = req.user.role === 'owner' || (membersCache && canAssignTo(req.user, t.assignee, membersCache));
+      if (!isSelf && !canManage) throw new Error('FORBIDDEN');
+      const checklist = t.checklist || [];
+      if (!checklist.length) throw new Error('NOT_FOUND');
+      const allDone = checklist.every(c => c.done);
+      checklist.forEach(c => { c.done = !allDone; });
+      updated = t;
+      return rows;
+    });
+    res.json(updated);
+  } catch (e) { sendErr(res, e); }
+});
+
+// Manually pushes an overdue task (and everything still open after it in
+// that same engineer's queue) forward by however many working days it's
+// currently late — a deliberate, one-click decision by whoever's managing
+// it, never automatic. Same reach as delete/approve: owner, or a team
+// leader acting on a task within their canLeadAssignTo scope (their own
+// team, or anyone they've been granted, per the app's cross-team model —
+// never another team leader).
+app.post('/api/tasks/:id/reschedule-remaining', requireAuth, requireLeader, async (req, res) => {
+  try {
+    let membersCache = null;
+    if (req.user.role !== 'owner') membersCache = await readTab('Members');
+    let updated;
+    let shiftedBy = 0;
+    await updateTab('Tasks', rows => {
+      const t = rows.find(r => r.id === req.params.id);
+      if (!t) throw new Error('NOT_FOUND');
+      if (req.user.role !== 'owner' && !canLeadAssignTo(req.user, t.assignee, membersCache)) throw new Error('FORBIDDEN');
+      if (!t.assignee || !t.endDate || t.status === 'done') throw new Error('BAD_REQUEST');
+      const todayStr = today();
+      if (t.endDate >= todayStr) throw new Error('BAD_REQUEST'); // not actually overdue — nothing to reschedule
+      shiftedBy = scheduler.workingDaysInclusive(scheduler.addDays(t.endDate, 1), todayStr);
+      if (shiftedBy > 0) {
+        scheduler.pushEngineerQueueFrom(rows, t.assignee, t.sequence || 0, shiftedBy);
+      }
+      updated = t;
+      return rows;
+    });
+    res.json({ task: updated, shiftedBy });
   } catch (e) { sendErr(res, e); }
 });
 
