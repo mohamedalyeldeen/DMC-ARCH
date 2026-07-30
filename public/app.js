@@ -766,10 +766,33 @@
     return base;
   }
 
+  let lastBoardSignature = null;
+  function boardSignature(tasks){
+    // Captures everything that affects what renderBoard() draws. If this
+    // comes out identical to last time, the DOM is left completely alone —
+    // rebuilding it on every poll was what caused the comment thread (and
+    // its focused input) to visibly blink and lose whatever was being typed.
+    const taskPart = tasks.map(t=> [
+      t.id, t.status, t.assignee, t.startDate, t.endDate, t.completedAt,
+      JSON.stringify(t.checklist||[]),
+      taskCommentsCache[t.id] ? taskCommentsCache[t.id].length : 'u'
+    ].join(':')).join('|');
+    return JSON.stringify({
+      taskPart,
+      expChk: Array.from(expandedChecklists).sort(),
+      expCom: Array.from(expandedComments).sort(),
+      doneMonth: doneMonthFilter,
+      search: document.getElementById('searchBox').value,
+      filter
+    });
+  }
   function renderBoard(){
+    const tasks = visibleTasks();
+    const sig = boardSignature(tasks);
+    if(sig === lastBoardSignature) return; // nothing relevant changed — don't touch the DOM
+    lastBoardSignature = sig;
     const board = document.getElementById('board');
     board.innerHTML = '';
-    const tasks = visibleTasks();
     COLUMNS.forEach((col, colIdx)=>{
       let colBase = tasks.filter(t=>t.status===col.key);
       if(col.key==='done' && doneMonthFilter!=='all'){
