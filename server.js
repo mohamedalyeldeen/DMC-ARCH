@@ -531,9 +531,122 @@ app.post('/api/messages', requireAuth, async (req, res) => {
   } catch (e) { sendErr(res, e); }
 });
 
+// Teams rarely change (a handful of rows, edited only via settings) but get
+// read on every single /api/state poll from every open tab — caching them
+// briefly cuts a meaningful chunk of read-quota pressure for free.
+let teamsCache = null;
+let teamsCacheAt = 0;
+const TEAMS_CACHE_MS = 30000;
+async function getTeamsCached() {
+  if (teamsCache && (Date.now() - teamsCacheAt) < TEAMS_CACHE_MS) return teamsCache;
+  const rows = await readTab('Teams');
+  teamsCache = rows;
+  teamsCacheAt = Date.now();
+  return rows;
+}
+function invalidateTeamsCache() { teamsCache = null; }
+
+// ---------- TASK COMMENTS ----------
+// Per-task discussion — separate from the team group chat. Visibility
+// mirrors task visibility: owner/viewer/team-leader/senior can see any
+// task's comments (their board reach spans everything); a plain member
+// only their own tasks'.
+function canSeeTask(user, task) {
+  if (user.role === 'owner' || user.isViewer || user.isTeamLead || user.isSenior) return true;
+  return task.assignee === user.id;
+}
+
+app.get('/api/tasks/:id/comments', requireAuth, async (req, res) => {
+  try {
+    const tasks = await readTab('Tasks');
+    const task = tasks.find(t => t.id === req.params.id);
+    if (!task) throw new Error('NOT_FOUND');
+    if (!canSeeTask(req.user, task)) throw new Error('FORBIDDEN');
+    const all = await readTab('Comments').catch(() => []);
+    const comments = all.filter(c => c.taskId === req.params.id)
+      .sort((a, b) => (a.createdAt || '').localeCompare(b.createdAt || ''));
+    res.json({ comments });
+  } catch (e) { sendErr(res, e); }
+});
+
+app.post('/api/tasks/:id/comments', requireAuth, async (req, res) => {
+  try {
+    if (req.user.isViewer) throw new Error('FORBIDDEN'); // read-only everywhere, including here
+    const text = (req.body.text || '').trim();
+    if (!text) throw new Error('BAD_REQUEST');
+    const tasks = await readTab('Tasks');
+    const task = tasks.find(t => t.id === req.params.id);
+    if (!task) throw new Error('NOT_FOUND');
+    if (!canSeeTask(req.user, task)) throw new Error('FORBIDDEN');
+    let saved;
+    await updateTabSafe('Comments', rows => {
+      saved = {
+        id: genId('cm'), taskId: req.params.id, authorId: req.user.id || 'owner',
+        authorName: req.user.name || 'Someone', text: text.slice(0, 1000), createdAt: new Date().toISOString()
+      };
+      rows.push(saved);
+      return rows;
+    });
+    if (task.assignee && task.assignee !== req.user.id) {
+      await addNotification(task.assignee, task.id, 'commented', `${req.user.name || 'Someone'} commented on "${task.title}"`, actorLabel(req.user));
+    }
+    res.json(saved);
+  } catch (e) { sendErr(res, e); }
+});
+
+// There's no persistent background scheduler in this app (it's a plain
+// request-driven Node server, not a cron host) — so instead of a true cron
+// job, this piggybacks on regular polling: every /api/state call gives it a
+// chance to run, but it self-throttles to at most once every 6 hours via a
+// Config timestamp, so it doesn't do real work on every single poll.
+// Notifies the assignee AND every team leader about tasks whose end date
+// has passed while they're still stuck in To Do/In Progress (never
+// submitted for review).
+async function checkOverdueEscalations() {
+  try {
+    const lastCheck = await getConfig('lastOverdueCheckAt');
+    if (lastCheck && (Date.now() - new Date(lastCheck).getTime()) < 6 * 60 * 60 * 1000) return;
+    await setConfig('lastOverdueCheckAt', new Date().toISOString());
+    const [tasksAll, membersAll] = await Promise.all([readTab('Tasks'), readTab('Members')]);
+    const todayStr = today();
+    const overdue = tasksAll.filter(t => t.assignee && t.endDate && t.endDate < todayStr && (t.status === 'todo' || t.status === 'inprogress'));
+    if (!overdue.length) return;
+    const leads = membersAll.filter(m => m.isTeamLead);
+    for (const t of overdue) {
+      await addNotification(t.assignee, t.id, 'overdue', `Overdue: "${t.title}" was due ${t.endDate}`, 'System');
+      const assigneeName = (membersAll.find(m => m.id === t.assignee) || {}).name || 'Someone';
+      for (const lead of leads) {
+        if (lead.id !== t.assignee) {
+          await addNotification(lead.id, t.id, 'overdue_escalation', `${assigneeName}'s task "${t.title}" is overdue (was due ${t.endDate})`, 'System');
+        }
+      }
+    }
+  } catch (e) {
+    console.error('overdue escalation check failed:', e.message);
+  }
+}
+
+// Owner-only full data export — a manual substitute for a true automatic
+// backup, since this is a plain request-driven Node server with no
+// persistent scheduler to run one on a timer. Returns every tab's raw data
+// (minus password hashes) as one JSON payload the browser turns into a
+// downloadable file; the owner can re-run this any time (e.g. weekly).
+app.get('/api/backup/export', requireAuth, requireOwner, async (req, res) => {
+  try {
+    const tabs = ['Teams', 'Members', 'Tasks', 'Notifications', 'Achievements', 'WorkDays', 'ProjectTargets', 'Messages', 'ChecklistTemplates', 'Comments'];
+    const data = {};
+    for (const tab of tabs) {
+      const rows = await readTab(tab).catch(() => []);
+      data[tab] = tab === 'Members' ? rows.map(({ passwordHash, ...rest }) => rest) : rows;
+    }
+    res.json({ exportedAt: new Date().toISOString(), data });
+  } catch (e) { sendErr(res, e); }
+});
+
 app.get('/api/state', requireAuth, async (req, res) => {
   try {
-    const [teamsAll, membersRaw, tasksAll] = await Promise.all([readTab('Teams'), readTab('Members'), readTab('Tasks')]);
+    checkOverdueEscalations().catch(() => {}); // fire-and-forget, self-throttled, never blocks the response
+    const [teamsAll, membersRaw, tasksAll] = await Promise.all([getTeamsCached(), readTab('Members'), readTab('Tasks')]);
     let notificationsAll = [];
     try {
       notificationsAll = await readTab('Notifications');
@@ -647,6 +760,7 @@ app.put('/api/teams/:id', requireAuth, requireOwner, async (req, res) => {
       updated = t;
       return rows;
     });
+    invalidateTeamsCache();
     res.json(updated);
   } catch (e) { sendErr(res, e); }
 });
@@ -766,6 +880,63 @@ app.post('/api/tasks', requireAuth, requireAssigner, async (req, res) => {
       await addNotification(newTask.assignee, newTask.id, 'assigned', `New task assigned: "${newTask.title}"`, actorLabel(req.user));
     }
     res.json(newTask);
+  } catch (e) { sendErr(res, e); }
+});
+
+// Creates many tasks at once for a new project — same zone/project/task
+// type/assignee, one task per "building" line, auto-scheduled back to back
+// for the assignee. Meant for spinning up a fresh project's worth of
+// similar tasks (e.g. one per building) without repeating the same form
+// twenty times.
+app.post('/api/tasks/bulk', requireAuth, requireAssigner, async (req, res) => {
+  try {
+    const { zone, project, taskType, assignee } = req.body;
+    const buildings = Array.isArray(req.body.buildings)
+      ? req.body.buildings.filter(b => typeof b === 'string' && b.trim()).slice(0, 100)
+      : [];
+    if (!buildings.length) throw new Error('BAD_REQUEST');
+    validateTaskCategorization(zone, project, taskType);
+    if (req.user.role !== 'owner') {
+      if (!assignee) throw new Error('FORBIDDEN');
+      const members = await readTab('Members');
+      if (!canAssignTo(req.user, assignee, members)) throw new Error('FORBIDDEN');
+    }
+    const { taskItem, checklist: templateChecklist } = await resolveTaskItemAndChecklist(taskType, req.body.taskItem, '', []);
+    const dur = Math.max(1, parseInt(req.body.durationDays, 10) || 1);
+    let created = [];
+    await updateTab('Tasks', rows => {
+      let lastId = req.body.insertAfterTaskId || null;
+      buildings.forEach(buildingRaw => {
+        const building = buildingRaw.trim();
+        let startDate = '', endDate = '', sequence = 0;
+        if (assignee) {
+          const computed = scheduler.insertWithShift(rows, assignee, { afterTaskId: lastId, durationDays: dur });
+          startDate = computed.startDate; endDate = computed.endDate; sequence = computed.sequence;
+        }
+        // Each task gets its own independent checklist copy (own done-state).
+        const checklist = templateChecklist.map(c => ({ id: genId('cl'), text: c.text, done: false }));
+        const title = composeTaskTitle({ zone, project, building, taskType });
+        const newTask = {
+          id: genId('t'), title, description: '', assignee: assignee || '',
+          due: endDate || '', status: 'todo', completedAt: '',
+          startDate, endDate, sequence,
+          zone, project, building, taskType,
+          numDrawings: 0, revisionNo: '', sheetFormat: '', checklist, taskItem,
+          history: [{ status: 'todo', at: today() }], createdAt: today()
+        };
+        rows.push(newTask);
+        created.push(newTask);
+        lastId = newTask.id;
+      });
+      return rows;
+    });
+    for (const t of created) {
+      if (t.assignee) {
+        await notifyAssignment(t, req.user);
+        await addNotification(t.assignee, t.id, 'assigned', `New task assigned: "${t.title}"`, actorLabel(req.user));
+      }
+    }
+    res.json({ created });
   } catch (e) { sendErr(res, e); }
 });
 
