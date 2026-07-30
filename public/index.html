@@ -229,6 +229,31 @@
   </div>
 </div>
 
+<div class="modal-overlay" id="leaveModalOverlay">
+  <div class="modal">
+    <h3>Log a leave</h3>
+    <p style="font-size:12.5px;color:var(--text-dim-on-paper);margin-top:-8px;">Sick leave pushes back every one of their open tasks by however many working days it covers. Regular leave/absence is just kept on record — it never moves a deadline.</p>
+    <div class="field"><label>Engineer</label><select id="lvMember"></select></div>
+    <div class="field"><label>Type</label>
+      <select id="lvType">
+        <option value="sick">Sick leave (pushes deadlines)</option>
+        <option value="other">Regular leave / absence (no effect on deadlines)</option>
+      </select>
+    </div>
+    <div class="field-row">
+      <div class="field"><label>Start date</label><input type="date" id="lvStartDate"></div>
+      <div class="field"><label>End date</label><input type="date" id="lvEndDate"></div>
+    </div>
+    <div class="field-error" id="lvError">Pick an engineer and a valid date range.</div>
+    <div class="modal-actions">
+      <div style="margin-left:auto;display:flex;gap:10px;">
+        <button type="button" class="btn-cancel" id="cancelLeaveBtn">Cancel</button>
+        <button type="button" class="btn-primary" id="confirmLeaveBtn">Log leave</button>
+      </div>
+    </div>
+  </div>
+</div>
+
 <div class="modal-overlay" id="bulkModalOverlay">
   <div class="modal">
     <h3>Bulk assign tasks</h3>

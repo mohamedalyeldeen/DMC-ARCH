@@ -49,8 +49,14 @@
   function escapeHtml(str){ const d=document.createElement('div'); d.textContent = str==null?'':String(str); return d.innerHTML; }
   function initials(name){ return (name||'').trim().split(/\s+/).map(w=>w[0]).slice(0,2).join('').toUpperCase(); }
 
-  // ---------- WEEKEND POLICY (Friday & Saturday are non-working days) ----------
-  function isWeekendIso(iso){ if(!iso) return false; const dow = parseIsoUTC(iso).getUTCDay(); return dow===5 || dow===6; }
+  // ---------- WEEKEND + HOLIDAY POLICY (Friday/Saturday and owner-managed public holidays are non-working days) ----------
+  function isWeekendIso(iso){
+    if(!iso) return false;
+    const dow = parseIsoUTC(iso).getUTCDay();
+    if(dow===5 || dow===6) return true;
+    const holidays = (state.taxonomy && state.taxonomy.holidays) || [];
+    return holidays.includes(iso);
+  }
   function addDaysIso(iso, days){ const d=parseIsoUTC(iso); d.setUTCDate(d.getUTCDate()+days); return d.toISOString().slice(0,10); }
   function daysBetweenIso(a,b){ return Math.round((parseIsoUTC(b) - parseIsoUTC(a))/86400000); }
 
@@ -246,6 +252,11 @@
   // team-wide read visibility as team leads (they need to see teammates to
   // assign to), even though their write rights are narrower.
   function isLeaderLike(){ return isOwner() || isTeamLead() || isSenior() || isViewer(); }
+  // Matches the backend's requireLeader exactly — owner or team lead only,
+  // never a senior. Used for actions that are lead-only (delete, approve,
+  // logging leave), as opposed to isLeaderLike() which is a broader
+  // read-visibility tier that includes seniors and viewers.
+  function isLeader(){ return isOwner() || isTeamLead(); }
   function canManageMembers(){ return isOwner(); }
   // Whether this person can create a task assignment at all (used to show
   // the "New Task" button and gate the modal open/submit) — owner, team
@@ -865,6 +876,7 @@
       </div>
       ${expanded ? `
         <div class="ticket-checklist-list">
+          ${canToggleChecklist ? `<button type="button" class="tk-btn back cl-check-all-btn" style="margin-bottom:6px;">${checklistComplete?'Uncheck all':'✓ Check all'}</button>` : ''}
           ${checklist.map(c=>`
             <label class="ticket-checklist-item ${c.done?'done':''}">
               <input type="checkbox" class="cl-toggle" data-item="${c.id}" ${c.done?'checked':''} ${canToggleChecklist?'':'disabled'}>
@@ -907,6 +919,9 @@
         ${checklistHtml}
         ${commentsHtml}
         <div class="lifecycle">${dots}</div>
+        ${overdue && colIdx!==3 && isLeader() && canManageThisTask(t) ? `
+          <button type="button" class="tk-btn back" data-act="reschedule" style="width:100%;margin-top:6px;border-color:var(--rust);color:var(--rust);">↻ Reschedule remaining</button>
+        ` : ''}
         <div class="ticket-actions">
           ${colIdx>0? `<button class="tk-btn back" data-act="back" ${canBack?'':'disabled'}>◂ Back</button>`:''}
           ${colIdx<COLUMNS.length-1? `<button class="tk-btn" data-act="forward" ${canFwd?'':'disabled'} title="${blockedByChecklist?'Check off every checklist item first':''}">${nextActionLabel(colIdx)}</button>`:''}
@@ -938,6 +953,16 @@
           }
           renderBoard();
         }
+        else if(act==='reschedule'){
+          if(!confirm(`Push "${t.title}" and everything queued after it for ${member?member.name:'this engineer'} forward to catch up to today?`)) return;
+          btn.disabled = true;
+          try{
+            const result = await api('POST', `/api/tasks/${t.id}/reschedule-remaining`, {});
+            await refreshState();
+            alert(`Rescheduled — pushed forward ${result.shiftedBy} working day${result.shiftedBy===1?'':'s'}.`);
+          }catch(e){ alert(e.message); }
+          finally{ btn.disabled = false; }
+        }
       });
     });
     el.querySelectorAll('.cl-toggle').forEach(cb=>{
@@ -958,6 +983,21 @@
         }catch(e){ alert(e.message); cb.checked = !cb.checked; }
       });
     });
+    const checkAllBtn = el.querySelector('.cl-check-all-btn');
+    if(checkAllBtn){
+      checkAllBtn.addEventListener('click', async (e)=>{
+        e.stopPropagation();
+        checkAllBtn.disabled = true;
+        try{
+          const updatedTask = await api('POST', `/api/tasks/${t.id}/checklist/check-all`, {});
+          ['tasks','dashboardTasks'].forEach(key=>{
+            const idx = state[key].findIndex(x=>x.id===updatedTask.id);
+            if(idx>-1) state[key][idx] = updatedTask;
+          });
+          renderApp();
+        }catch(e){ alert(e.message); checkAllBtn.disabled = false; }
+      });
+    }
     const commentInput = el.querySelector('.ticket-comment-input');
     const commentSendBtn = el.querySelector('.ticket-comment-send');
     if(commentInput) commentInput.addEventListener('click', e=>e.stopPropagation());
@@ -2047,8 +2087,11 @@
     }).join('');
     el.innerHTML = `
       <div class="dash-card">
-        <h3>Team capacity</h3>
-        <div class="sort-toggle">
+        <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;">
+          <h3 style="margin:0;">Team capacity</h3>
+          ${isLeader() ? '<button type="button" class="ghost-btn" id="openLeaveModalBtn" style="font-size:11.5px;padding:6px 12px;">+ Log leave</button>' : ''}
+        </div>
+        <div class="sort-toggle" style="margin-top:14px;">
           <button class="mini-btn ${capacitySortMode==='availability'?'primary':''}" id="sortByAvailBtn">Sort by availability</button>
           <button class="mini-btn ${capacitySortMode==='capacity'?'primary':''}" id="sortByCapBtn">Sort by capacity %</button>
         </div>
@@ -2057,6 +2100,8 @@
     `;
     document.getElementById('sortByAvailBtn').addEventListener('click', ()=>{ capacitySortMode='availability'; renderCapacityList(); });
     document.getElementById('sortByCapBtn').addEventListener('click', ()=>{ capacitySortMode='capacity'; renderCapacityList(); });
+    const leaveBtn = document.getElementById('openLeaveModalBtn');
+    if(leaveBtn) leaveBtn.addEventListener('click', openLeaveModal);
   }
 
   // ---------- PRODUCTIVITY DASHBOARD (Power-BI-style charts) ----------
@@ -2734,6 +2779,51 @@
       URL.revokeObjectURL(url);
     }catch(e){ alert(e.message); }
   }
+
+  // ---------- LOG LEAVE MODAL ----------
+  // Owner and team leader only, in both cases scoped by their own team-
+  // membership visibility (state.members is already scoped that way for a
+  // team lead) — this is a deliberately narrower, purely team-based rule,
+  // separate from the cross-team reach a lead/senior has for assignments.
+  function openLeaveModal(){
+    modalOpenFlag = true;
+    const members = state.members.filter(m=>!m.isViewer);
+    document.getElementById('lvMember').innerHTML = members.length
+      ? members.map(m=>`<option value="${m.id}">${escapeHtml(m.name)}</option>`).join('')
+      : '<option value="">No one to log leave for</option>';
+    document.getElementById('lvType').value = 'sick';
+    document.getElementById('lvStartDate').value = '';
+    document.getElementById('lvEndDate').value = '';
+    document.getElementById('lvError').style.display = 'none';
+    document.getElementById('leaveModalOverlay').classList.add('open');
+  }
+  function closeLeaveModal(){ document.getElementById('leaveModalOverlay').classList.remove('open'); modalOpenFlag=false; }
+  document.getElementById('cancelLeaveBtn').addEventListener('click', closeLeaveModal);
+  document.getElementById('leaveModalOverlay').addEventListener('click', (e)=>{ if(e.target.id==='leaveModalOverlay') closeLeaveModal(); });
+  document.getElementById('confirmLeaveBtn').addEventListener('click', async ()=>{
+    const memberId = document.getElementById('lvMember').value;
+    const type = document.getElementById('lvType').value;
+    const startDate = document.getElementById('lvStartDate').value;
+    const endDate = document.getElementById('lvEndDate').value;
+    if(!memberId || !startDate || !endDate || endDate<startDate){
+      document.getElementById('lvError').style.display='block';
+      return;
+    }
+    document.getElementById('lvError').style.display='none';
+    const btn = document.getElementById('confirmLeaveBtn');
+    btn.disabled = true;
+    try{
+      const saved = await api('POST','/api/leaves',{memberId, type, startDate, endDate});
+      closeLeaveModal();
+      if(type==='sick' && saved.shiftedDays>0){
+        alert(`Logged. Their open tasks were pushed back ${saved.shiftedDays} working day${saved.shiftedDays===1?'':'s'}.`);
+      }
+      capacityLoaded = false;
+      await refreshState();
+      loadAndRenderCapacity();
+    }catch(e){ alert(e.message); }
+    finally{ btn.disabled = false; }
+  });
 
   boot();
 })();
