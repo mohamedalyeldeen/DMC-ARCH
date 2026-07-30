@@ -322,11 +322,13 @@
     document.getElementById('logView').style.display='none';
     document.getElementById('prodDashboardView').style.display='none';
     document.getElementById('capacityView').style.display='none';
+    document.getElementById('bulkAssignBtn').style.display='none';
     if(activeTab==='board'){
       document.getElementById('viewTitle').textContent = isLeaderLike() ? "This Week's Jobs" : 'My Tasks';
       document.getElementById('board').style.display='flex';
       document.getElementById('doneFilterBar').style.display='flex';
       document.getElementById('newTaskBtn').style.display = canCreateTasks() ? 'inline-block' : 'none';
+      document.getElementById('bulkAssignBtn').style.display = canCreateTasks() ? 'inline-block' : 'none';
       populateDoneMonthFilter();
       renderBoard();
     } else if(activeTab==='gantt'){
@@ -475,6 +477,7 @@
         </div>
         <div class="sidebar-foot">
           <button class="ghost-btn" id="exportBtn">↓ EXPORT SNAPSHOT (.json)</button>
+          <button class="ghost-btn" id="fullBackupBtn">↓ FULL BACKUP (all data)</button>
           <div style="font-size:10.5px;color:var(--text-dim-on-ink);line-height:1.5;">Tasks are stored in your Google Sheet. Use File → Version history there for backups.</div>
         </div>
       `;
@@ -482,6 +485,7 @@
       const addBtn = document.getElementById('addMemberBtn');
       if(addBtn) addBtn.addEventListener('click', ()=>openMemberModal(null));
       document.getElementById('exportBtn').addEventListener('click', doExport);
+      document.getElementById('fullBackupBtn').addEventListener('click', doFullBackup);
     } else {
       const team = teamById(session.teamId);
       el.innerHTML = `
@@ -750,7 +754,15 @@
         return true;
       });
     }
-    if(q) base = base.filter(t=>t.title.toLowerCase().includes(q));
+    if(q){
+      base = base.filter(t=>{
+        const assigneeName = (memberById(t.assignee)||{}).name || '';
+        const checklistText = Array.isArray(t.checklist) ? t.checklist.map(c=>c.text).join(' ') : '';
+        const haystack = [t.title, t.description, t.zone, t.project, t.building, t.taskType, t.taskItem, t.revisionNo, assigneeName, checklistText]
+          .filter(Boolean).join(' ').toLowerCase();
+        return haystack.includes(q);
+      });
+    }
     return base;
   }
 
@@ -797,6 +809,8 @@
   }
 
   let expandedChecklists = new Set(); // ticket ids currently showing their checklist detail
+  let expandedComments = new Set();   // ticket ids currently showing their comment thread
+  let taskCommentsCache = {};         // taskId -> [{...}] — loaded lazily, only when a thread is opened
 
   function renderTicket(t, colIdx){
     const el = document.createElement('div');
@@ -818,6 +832,8 @@
     const canEdit = canAssignThisTask(t);
     const canToggleChecklist = (session && t.assignee===session.id) || canEdit;
     const expanded = expandedChecklists.has(t.id);
+    const commentsExpanded = expandedComments.has(t.id);
+    const cachedComments = taskCommentsCache[t.id];
 
     const checklistHtml = checklist.length===0 ? '' : `
       <div class="ticket-checklist-toggle ${checklistComplete?'complete':''}" data-act="toggle-checklist">
@@ -836,6 +852,23 @@
       ` : ''}
     `;
 
+    const commentsHtml = `
+      <div class="ticket-comments-toggle" data-act="toggle-comments">
+        <span>💬 Comments${cachedComments? ` (${cachedComments.length})` : ''} ${commentsExpanded?'▲':'▼'}</span>
+      </div>
+      ${commentsExpanded ? `
+        <div class="ticket-comments-list" data-comments-list>
+          ${cachedComments===undefined ? '<div class="notif-empty">Loading…</div>' : renderCommentsListHtml(cachedComments)}
+        </div>
+        ${isViewer() ? '' : `
+          <div class="ticket-comment-input-row">
+            <input type="text" class="ticket-comment-input" placeholder="Write a comment…" maxlength="1000">
+            <button type="button" class="tk-btn back ticket-comment-send" style="max-width:50px;flex:0 0 50px;">Send</button>
+          </div>
+        `}
+      ` : ''}
+    `;
+
     el.innerHTML = `
       <div class="ticket-stub">
         <div class="ticket-num">#${(t.id||'').replace(/\D/g,'').slice(-3).padStart(3,'0')}</div>
@@ -849,6 +882,7 @@
           <div class="ticket-due ${overdue?'overdue':''}">${overdue?'⚠ ':''}${colIdx===3 ? (t.completedAt? 'Completed '+fmtDate(t.completedAt) : 'Completed date unknown') : (t.startDate && t.endDate ? fmtDate(t.startDate)+' → '+fmtDate(t.endDate) : 'No dates set')}</div>
         </div>
         ${checklistHtml}
+        ${commentsHtml}
         <div class="lifecycle">${dots}</div>
         <div class="ticket-actions">
           ${colIdx>0? `<button class="tk-btn back" data-act="back" ${canBack?'':'disabled'}>◂ Back</button>`:''}
@@ -873,6 +907,14 @@
           if(expandedChecklists.has(t.id)) expandedChecklists.delete(t.id); else expandedChecklists.add(t.id);
           renderBoard();
         }
+        else if(act==='toggle-comments'){
+          if(expandedComments.has(t.id)) expandedComments.delete(t.id);
+          else {
+            expandedComments.add(t.id);
+            if(taskCommentsCache[t.id]===undefined) loadTaskComments(t.id);
+          }
+          renderBoard();
+        }
       });
     });
     el.querySelectorAll('.cl-toggle').forEach(cb=>{
@@ -893,7 +935,48 @@
         }catch(e){ alert(e.message); cb.checked = !cb.checked; }
       });
     });
+    const commentInput = el.querySelector('.ticket-comment-input');
+    const commentSendBtn = el.querySelector('.ticket-comment-send');
+    if(commentInput) commentInput.addEventListener('click', e=>e.stopPropagation());
+    if(commentSendBtn){
+      commentSendBtn.addEventListener('click', async (e)=>{
+        e.stopPropagation();
+        const text = commentInput.value.trim();
+        if(!text) return;
+        commentSendBtn.disabled = true;
+        try{
+          await api('POST', `/api/tasks/${t.id}/comments`, {text});
+          await loadTaskComments(t.id);
+          renderBoard();
+        }catch(e){ alert(e.message); }
+        finally{ if(commentSendBtn) commentSendBtn.disabled = false; }
+      });
+      commentInput.addEventListener('keydown', (e)=>{
+        e.stopPropagation();
+        if(e.key==='Enter'){ e.preventDefault(); commentSendBtn.click(); }
+      });
+    }
     return el;
+  }
+
+  function renderCommentsListHtml(comments){
+    if(!comments || comments.length===0) return '<div class="notif-empty">No comments yet.</div>';
+    return comments.map(c=>`
+      <div class="ticket-comment-row">
+        <div class="ticket-comment-author">${escapeHtml(c.authorName||'Someone')}</div>
+        <div class="ticket-comment-text">${escapeHtml(c.text)}</div>
+        <div class="ticket-comment-time">${fmtDateTime(c.createdAt)}</div>
+      </div>
+    `).join('');
+  }
+  async function loadTaskComments(taskId){
+    try{
+      const data = await api('GET', `/api/tasks/${taskId}/comments`);
+      taskCommentsCache[taskId] = data.comments || [];
+      renderBoard();
+    }catch(e){
+      taskCommentsCache[taskId] = [];
+    }
   }
 
   function nextActionLabel(colIdx){ return (['Start ▸','Submit ▸','Approve ▸'])[colIdx] || 'Next ▸'; }
@@ -1196,6 +1279,88 @@
     const templates = (state.taxonomy && state.taxonomy.checklistTemplates) || {};
     const texts = (templates[taskType] && templates[taskType][item]) || [];
     renderChecklistPreview(texts.map(text=>({text, done:false})));
+  });
+
+  // ---------- BULK ASSIGN MODAL ----------
+  function populateBulkProjectOptions(zone, selectedProject){
+    const projectSel = document.getElementById('bkProject');
+    const projects = (state.taxonomy && state.taxonomy.zoneProjects[zone]) || [];
+    if(!zone || projects.length===0){
+      projectSel.innerHTML = '<option value="">Select a zone first…</option>';
+      projectSel.disabled = true;
+      return;
+    }
+    projectSel.disabled = false;
+    projectSel.innerHTML = '<option value="">Select a project…</option>' +
+      projects.map(p=>`<option value="${escapeHtml(p)}">${escapeHtml(p)}</option>`).join('');
+    if(selectedProject && projects.includes(selectedProject)) projectSel.value = selectedProject;
+  }
+  function updateBulkTaskItemField(){
+    const taskType = document.getElementById('bkTaskType').value;
+    const items = availableTaskItems(taskType);
+    const itemField = document.getElementById('bkTaskItemField');
+    const sel = document.getElementById('bkTaskItem');
+    if(items.length===0){
+      itemField.style.display='none';
+      sel.innerHTML = '<option value="">Select an item…</option>';
+      sel.value = '';
+      return;
+    }
+    itemField.style.display='block';
+    sel.innerHTML = '<option value="">Select an item…</option>' + items.map(i=>`<option value="${escapeHtml(i)}">${escapeHtml(i)}</option>`).join('');
+    sel.value = '';
+  }
+  document.getElementById('bkZone').addEventListener('change', (e)=> populateBulkProjectOptions(e.target.value, ''));
+  document.getElementById('bkTaskType').addEventListener('change', updateBulkTaskItemField);
+
+  function openBulkModal(){
+    modalOpenFlag = true;
+    const zones = Object.keys((state.taxonomy && state.taxonomy.zoneProjects) || {});
+    document.getElementById('bkZone').innerHTML = '<option value="">Select a zone…</option>' +
+      zones.map(z=>`<option value="${escapeHtml(z)}">${escapeHtml(z)}</option>`).join('');
+    document.getElementById('bkProject').innerHTML = '<option value="">Select a zone first…</option>';
+    document.getElementById('bkProject').disabled = true;
+    const taskTypes = (state.taxonomy && state.taxonomy.taskTypes) || [];
+    document.getElementById('bkTaskType').innerHTML = '<option value="">Select a task type…</option>' +
+      taskTypes.map(tt=>`<option value="${escapeHtml(tt)}">${escapeHtml(tt)}</option>`).join('');
+    document.getElementById('bkTaskItemField').style.display='none';
+    document.getElementById('bkTaskItem').innerHTML = '<option value="">Select an item…</option>';
+    const engineers = assignableEngineers();
+    document.getElementById('bkAssignee').innerHTML = engineers.length
+      ? engineers.map(m=>`<option value="${m.id}">${escapeHtml(m.name)}</option>`).join('')
+      : '<option value="">No one you can assign to yet</option>';
+    document.getElementById('bkDuration').value = 1;
+    document.getElementById('bkBuildings').value = '';
+    document.getElementById('bkError').style.display='none';
+    document.getElementById('bulkModalOverlay').classList.add('open');
+  }
+  function closeBulkModal(){ document.getElementById('bulkModalOverlay').classList.remove('open'); modalOpenFlag=false; }
+  document.getElementById('bulkAssignBtn').addEventListener('click', openBulkModal);
+  document.getElementById('cancelBulkBtn').addEventListener('click', closeBulkModal);
+  document.getElementById('bulkModalOverlay').addEventListener('click', (e)=>{ if(e.target.id==='bulkModalOverlay') closeBulkModal(); });
+
+  document.getElementById('confirmBulkBtn').addEventListener('click', async ()=>{
+    const zone = document.getElementById('bkZone').value;
+    const project = document.getElementById('bkProject').value;
+    const taskType = document.getElementById('bkTaskType').value;
+    const taskItem = document.getElementById('bkTaskItem').value;
+    const assignee = document.getElementById('bkAssignee').value;
+    const durationDays = parseInt(document.getElementById('bkDuration').value,10) || 1;
+    const buildings = document.getElementById('bkBuildings').value.split('\n').map(s=>s.trim()).filter(Boolean);
+    if(!zone || !project || !taskType || buildings.length===0){
+      document.getElementById('bkError').style.display='block';
+      return;
+    }
+    document.getElementById('bkError').style.display='none';
+    const btn = document.getElementById('confirmBulkBtn');
+    btn.disabled = true;
+    try{
+      const result = await api('POST','/api/tasks/bulk', {zone, project, taskType, taskItem, assignee, durationDays, buildings});
+      closeBulkModal();
+      await refreshState();
+      alert(`Created ${result.created.length} task${result.created.length===1?'':'s'}.`);
+    }catch(e){ alert(e.message); }
+    finally{ btn.disabled = false; }
   });
   document.getElementById('newTaskBtn').addEventListener('click', ()=>openTaskModal(null));
   document.getElementById('cancelModalBtn').addEventListener('click', closeTaskModal);
@@ -1737,6 +1902,32 @@
     if(to) to.addEventListener('change', ()=>{ evaFilters.to = to.value; renderDashboard(); });
   }
 
+  function renderOverdueWidget(pool){
+    const todayD = todayStr();
+    const overdue = pool.filter(t=> t.endDate && t.endDate<todayD && t.status!=='done')
+      .sort((a,b)=> (a.endDate||'').localeCompare(b.endDate||''));
+    if(!overdue.length) return '';
+    const rows = overdue.map(t=>{
+      const m = memberById(t.assignee);
+      const daysLate = Math.max(1, Math.round((new Date(todayD)-new Date(t.endDate))/86400000));
+      return `<tr>
+        <td>${escapeHtml(t.title)}</td>
+        <td>${m? escapeHtml(m.name) : '<span style="color:var(--text-dim-on-ink);">Unassigned</span>'}</td>
+        <td>${fmtDate(t.endDate)}</td>
+        <td style="color:var(--rust);">${daysLate} day${daysLate>1?'s':''} late</td>
+      </tr>`;
+    }).join('');
+    return `
+      <div class="dash-card" style="border-color:var(--rust);">
+        <h3 style="color:var(--rust);">⚠ Overdue Now (${overdue.length})</h3>
+        <table class="dash-table">
+          <thead><tr><th>Task</th><th>Assignee</th><th>Was due</th><th>Status</th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+    `;
+  }
+
   function renderDashboard(){
     const el = document.getElementById('dashboardView');
     if(isLeaderLike()){
@@ -1754,6 +1945,7 @@
         </tr>`;
       }).join('');
       el.innerHTML = `
+        ${renderOverdueWidget(pool)}
         <div class="dash-card">
           <h3>Team performance</h3>
           <table class="dash-table">
@@ -1769,6 +1961,7 @@
       const s = memberStats(session.id, pool);
       const pct = s.completed>0 ? Math.round((s.onTime/s.completed)*100) : 0;
       el.innerHTML = `
+        ${renderOverdueWidget(pool)}
         <div class="dash-card">
           <h3>Your performance</h3>
           <div class="dash-stats-row">
@@ -2091,6 +2284,30 @@
 
   function doneTasksPool(){ return (state.dashboardTasks || state.tasks).filter(t=>t.status==='done'); }
 
+  // ---------- CSV EXPORT ----------
+  function csvEscape(val){
+    const s = (val===undefined||val===null) ? '' : String(val);
+    return /[",\n]/.test(s) ? '"'+s.replace(/"/g,'""')+'"' : s;
+  }
+  function downloadCsv(filename, rows){
+    const csv = rows.map(row=> row.map(csvEscape).join(',')).join('\r\n');
+    const blob = new Blob([csv], {type:'text/csv;charset=utf-8;'});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = filename;
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }
+  function exportLogCsv(){
+    const rows = filteredLogRows();
+    const header = ['Completed','Engineer','Zone','Project','Building','Task Type','Task Item','Drawings','Revision','Format'];
+    const body = rows.map(t=>{
+      const m = memberById(t.assignee);
+      return [fmtDate(t.completedAt), m?m.name:'', t.zone||'', t.project||'', t.building||'', t.taskType||'', t.taskItem||'', t.numDrawings||0, t.revisionNo||'', t.sheetFormat||''];
+    });
+    downloadCsv(`completed-tasks-${todayStr()}.csv`, [header, ...body]);
+  }
+
   function filteredLogRows(){
     return doneTasksPool().filter(t=>{
       if(logFilters.engineer && t.assignee!==logFilters.engineer) return false;
@@ -2144,7 +2361,11 @@
     }).join('');
     return `
       <div class="dash-card">
-        <h3>Completed Tasks Log (${rows.length})</h3>
+        <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;">
+          <h3 style="margin:0;">Completed Tasks Log (${rows.length})</h3>
+          <button type="button" class="ghost-btn" id="logExportCsvBtn" style="font-size:11.5px;padding:6px 12px;">⬇ Export CSV</button>
+        </div>
+        <div style="margin-top:14px;"></div>
         ${filterRow}
         <div style="overflow-x:auto;">
           <table class="dash-table">
@@ -2289,6 +2510,9 @@
     if(project) project.addEventListener('change', ()=>{ logFilters.project=project.value; renderLogView(); });
     if(from) from.addEventListener('change', ()=>{ logFilters.from=from.value; renderLogView(); });
     if(to) to.addEventListener('change', ()=>{ logFilters.to=to.value; renderLogView(); });
+
+    const exportBtn = document.getElementById('logExportCsvBtn');
+    if(exportBtn) exportBtn.addEventListener('click', exportLogCsv);
 
     const monthPicker = document.getElementById('logMonthPicker');
     if(monthPicker) monthPicker.addEventListener('change', ()=>{ logMonth = monthPicker.value; renderLogView(); });
@@ -2475,6 +2699,17 @@
     const a = document.createElement('a');
     a.href = url; a.download = `click-snapshot-${todayStr()}.json`; a.click();
     URL.revokeObjectURL(url);
+  }
+
+  async function doFullBackup(){
+    try{
+      const backup = await api('GET', '/api/backup/export');
+      const blob = new Blob([JSON.stringify(backup, null, 2)], {type:'application/json'});
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = `click-full-backup-${todayStr()}.json`; document.body.appendChild(a); a.click(); document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    }catch(e){ alert(e.message); }
   }
 
   boot();

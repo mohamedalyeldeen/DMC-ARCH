@@ -65,9 +65,10 @@
         <button class="tab-btn" id="tabCapacityBtn" style="display:none;">Capacity</button>
       </div>
       <h1 id="viewTitle">This Week's Jobs</h1>
-      <input type="text" class="search-box" id="searchBox" placeholder="Search tasks…">
+      <input type="text" class="search-box" id="searchBox" placeholder="Search title, project, assignee, checklist…">
       <div class="stats" id="statsLine"></div>
       <button class="primary-btn" id="newTaskBtn" style="display:none;">+ Assign task</button>
+      <button class="ghost-btn" id="bulkAssignBtn" style="display:none;">+ Bulk assign</button>
       <div class="user-strip">
         <button class="mini-btn" id="myStatsBtn" style="display:none;">🏆 My Stats</button>
         <button class="mini-btn" id="notifBtn" style="position:relative;">🔔<span id="notifBadge" style="display:none;position:absolute;top:-6px;right:-6px;background:var(--rust);color:#fff;border-radius:10px;padding:1px 5px;font-size:9px;font-family:'IBM Plex Mono',monospace;"></span></button>
@@ -223,6 +224,35 @@
       <div style="margin-left:auto;display:flex;gap:10px;">
         <button type="button" class="btn-cancel" id="cancelDuplicateBtn">Cancel</button>
         <button type="button" class="btn-primary" id="confirmDuplicateBtn">Duplicate</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="bulkModalOverlay">
+  <div class="modal">
+    <h3>Bulk assign tasks</h3>
+    <p style="font-size:12.5px;color:var(--text-dim-on-paper);margin-top:-8px;">Creates one task per building/line below, all with the same zone, project, task type, and assignee — scheduled back to back automatically.</p>
+    <div class="field-row">
+      <div class="field"><label>Zone</label><select id="bkZone"><option value="">Select a zone…</option></select></div>
+      <div class="field"><label>Project</label><select id="bkProject" disabled><option value="">Select a zone first…</option></select></div>
+    </div>
+    <div class="field"><label>Task title</label><select id="bkTaskType"><option value="">Select a task type…</option></select></div>
+    <div class="field" id="bkTaskItemField" style="display:none;">
+      <label>Task Item</label>
+      <select id="bkTaskItem"><option value="">Select an item…</option></select>
+    </div>
+    <div class="field"><label>Assign to</label><select id="bkAssignee"></select></div>
+    <div class="field"><label>Duration per task (days)</label><input type="number" id="bkDuration" min="1" value="1"></div>
+    <div class="field">
+      <label>Buildings / lines <span style="text-transform:none;font-weight:400;">(one per line — each becomes its own task)</span></label>
+      <textarea id="bkBuildings" rows="6" placeholder="Building 1&#10;Building 2&#10;Building 3"></textarea>
+    </div>
+    <div class="field-error" id="bkError">Fill in zone, project, task title, and at least one building line.</div>
+    <div class="modal-actions">
+      <div style="margin-left:auto;display:flex;gap:10px;">
+        <button type="button" class="btn-cancel" id="cancelBulkBtn">Cancel</button>
+        <button type="button" class="btn-primary" id="confirmBulkBtn">Create tasks</button>
       </div>
     </div>
   </div>
