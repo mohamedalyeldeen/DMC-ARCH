@@ -18,19 +18,19 @@ app.use(express.static(path.join(__dirname, 'public')));
 // Holidays rarely change but every date-math route (task create/edit/move,
 // capacity, etc.) needs them loaded into the scheduler before it runs —
 // cached for 5 minutes so this doesn't add a Sheets read to every request.
-let holidaysCache = null;
-let holidaysCacheAt = 0;
-const HOLIDAYS_CACHE_MS = 5 * 60 * 1000;
-async function ensureHolidaysLoaded() {
-  if (holidaysCache && (Date.now() - holidaysCacheAt) < HOLIDAYS_CACHE_MS) return;
+// Only wired into /api/* routes below (skipping auth/status/login and
+// anything else that never touches a date) to avoid needless work on
+// requests that don't need it at all.
+const holidaysReader = makeCachedReader(async () => {
   const rows = await readTab('Holidays').catch(() => []);
-  const dates = rows.map(r => r.date).filter(Boolean);
+  return rows.map(r => r.date).filter(Boolean);
+}, 5 * 60 * 1000);
+async function ensureHolidaysLoaded() {
+  const dates = await holidaysReader.get();
   scheduler.setHolidays(dates);
-  holidaysCache = dates;
-  holidaysCacheAt = Date.now();
 }
-function invalidateHolidaysCache() { holidaysCache = null; }
-app.use((req, res, next) => { ensureHolidaysLoaded().catch(() => {}).then(() => next()); });
+function invalidateHolidaysCache() { holidaysReader.invalidate(); }
+app.use('/api', (req, res, next) => { ensureHolidaysLoaded().catch(() => {}).then(() => next()); });
 
 const COLORS = ['#E2892B', '#3E7C74', '#7C6AA6', '#C4574B', '#4C7EA8', '#8A9A3B'];
 const COLUMN_ORDER = ['todo', 'inprogress', 'submitted', 'done'];
@@ -81,13 +81,10 @@ function normalizeNumDrawings(n) {
 // Cached briefly: this gets read on every /api/state poll (every ~8s per
 // open tab), but the owner editing it directly in the sheet is rare —
 // re-reading it that often was needless load against the Sheets API quota.
-let checklistTemplatesCache = null;
-let checklistTemplatesCacheAt = 0;
-const CHECKLIST_TEMPLATES_CACHE_MS = 60000;
-async function getChecklistTemplates() {
-  if (checklistTemplatesCache && (Date.now() - checklistTemplatesCacheAt) < CHECKLIST_TEMPLATES_CACHE_MS) {
-    return checklistTemplatesCache;
-  }
+// Cached briefly: this gets read on every /api/state poll (every ~8s per
+// open tab), but the owner editing it directly in the sheet is rare —
+// re-reading it that often was needless load against the Sheets API quota.
+const checklistTemplatesReader = makeCachedReader(async () => {
   const rows = await readTab('ChecklistTemplates').catch(() => []);
   const map = {};
   rows.forEach(row => {
@@ -101,10 +98,9 @@ async function getChecklistTemplates() {
       map[tt][item] = map[tt][item].sort((a, b) => (a.order || 0) - (b.order || 0)).map(r => r.text);
     });
   });
-  checklistTemplatesCache = map;
-  checklistTemplatesCacheAt = Date.now();
   return map;
-}
+}, 60000);
+async function getChecklistTemplates() { return checklistTemplatesReader.get(); }
 
 // Resolves the taskItem + checklist for a task being created or edited.
 // Checklists are 100% template-driven — nobody types a checklist item by
@@ -321,11 +317,22 @@ async function evaluateMemberAchievements(memberId, allTasks, justCompletedTask,
   return { newAchievements, member };
 }
 
+// Owner password hash + display name rarely change but /api/auth/status
+// gets hit on every single page load (before anyone's even logged in), and
+// login-owner on every attempt — caching these briefly matters most when
+// many people are opening the app around the same time (e.g. start of day).
+const ownerConfigReader = makeCachedReader(async () => {
+  const [hash, name] = await Promise.all([getConfig('ownerPasswordHash'), getConfig('ownerName')]);
+  return { hash, name };
+}, 60000);
+function invalidateOwnerConfigCache() { ownerConfigReader.invalidate(); }
+
 app.post('/api/auth/set-owner-name', requireAuth, requireOwner, async (req, res) => {
   try {
     const name = (req.body.name || '').trim();
     if (!name) return res.status(400).json({ error: 'Enter a name.' });
     await setConfig('ownerName', name);
+    invalidateOwnerConfigCache();
     const token = sign({ role: 'owner', name });
     res.json({ token, role: 'owner', name });
   } catch (e) { sendErr(res, e); }
@@ -338,20 +345,21 @@ function actorLabel(actor) {
 // ---------- AUTH ----------
 app.get('/api/auth/status', async (req, res) => {
   try {
-    const hash = await getConfig('ownerPasswordHash');
+    const { hash } = await ownerConfigReader.get();
     res.json({ setupNeeded: !hash });
   } catch (e) { sendErr(res, e); }
 });
 
 app.post('/api/auth/setup', async (req, res) => {
   try {
-    const hash = await getConfig('ownerPasswordHash');
-    if (hash) return res.status(400).json({ error: 'Setup was already completed.' });
+    const { hash: existingHash } = await ownerConfigReader.get();
+    if (existingHash) return res.status(400).json({ error: 'Setup was already completed.' });
     const { password, ownerName } = req.body;
     if (!password || password.length < 3) return res.status(400).json({ error: 'Choose a password with at least 3 characters.' });
     const h = await bcrypt.hash(password, 10);
     await setConfig('ownerPasswordHash', h);
     await setConfig('ownerName', (ownerName || 'Board Owner').trim());
+    invalidateOwnerConfigCache();
     const existingTeams = await readTab('Teams');
     if (existingTeams.length === 0) {
       await updateTab('Teams', () => ([
@@ -360,6 +368,7 @@ app.post('/api/auth/setup', async (req, res) => {
         { id: 'team3', name: 'Team Gamma', color: '#7C6AA6' },
         { id: 'team4', name: 'Team Delta', color: '#4C7EA8' }
       ]));
+      invalidateTeamsCache();
     }
     const finalName = (ownerName || 'Board Owner').trim();
     const token = sign({ role: 'owner', name: finalName });
@@ -369,11 +378,11 @@ app.post('/api/auth/setup', async (req, res) => {
 
 app.post('/api/auth/login-owner', async (req, res) => {
   try {
-    const hash = await getConfig('ownerPasswordHash');
+    const { hash, name } = await ownerConfigReader.get();
     if (!hash) return res.status(400).json({ error: 'Board has not been set up yet.' });
     const ok = await bcrypt.compare(req.body.password || '', hash);
     if (!ok) return res.status(401).json({ error: 'Incorrect owner password.' });
-    const ownerName = (await getConfig('ownerName')) || 'Board Owner';
+    const ownerName = name || 'Board Owner';
     const token = sign({ role: 'owner', name: ownerName });
     res.json({ token, role: 'owner', name: ownerName });
   } catch (e) { sendErr(res, e); }
@@ -399,6 +408,7 @@ app.post('/api/auth/change-password', requireAuth, async (req, res) => {
     const hash = await bcrypt.hash(newPassword, 10);
     if (req.user.role === 'owner') {
       await setConfig('ownerPasswordHash', hash);
+      invalidateOwnerConfigCache();
     } else {
       await updateTab('Members', rows => {
         const m = rows.find(r => r.id === req.user.id);
@@ -548,20 +558,38 @@ app.post('/api/messages', requireAuth, async (req, res) => {
   } catch (e) { sendErr(res, e); }
 });
 
-// Teams rarely change (a handful of rows, edited only via settings) but get
-// read on every single /api/state poll from every open tab — caching them
-// briefly cuts a meaningful chunk of read-quota pressure for free.
-let teamsCache = null;
-let teamsCacheAt = 0;
-const TEAMS_CACHE_MS = 30000;
-async function getTeamsCached() {
-  if (teamsCache && (Date.now() - teamsCacheAt) < TEAMS_CACHE_MS) return teamsCache;
-  const rows = await readTab('Teams');
-  teamsCache = rows;
-  teamsCacheAt = Date.now();
-  return rows;
+// A tiny cached-read helper with in-flight de-duplication: if the cache is
+// expired and several requests ask for it in the same instant (very
+// plausible under real concurrent traffic — many open tabs, many users),
+// they all share the ONE underlying Sheets read instead of each firing
+// their own. Without this, a cache "just barely expired" moment could
+// multiply reads by however many requests land in that window.
+function makeCachedReader(loader, ttlMs) {
+  let cache = null;
+  let cacheAt = 0;
+  let inFlight = null;
+  return {
+    async get() {
+      if (cache && (Date.now() - cacheAt) < ttlMs) return cache;
+      if (inFlight) return inFlight;
+      inFlight = loader().then(result => {
+        cache = result;
+        cacheAt = Date.now();
+        inFlight = null;
+        return result;
+      }).catch(e => { inFlight = null; throw e; });
+      return inFlight;
+    },
+    peek() { return cache; },
+    invalidate() { cache = null; }
+  };
 }
-function invalidateTeamsCache() { teamsCache = null; }
+
+// Teams rarely change (a handful of rows, edited only via settings) but get
+// read on every single /api/state poll from every open tab.
+const teamsReader = makeCachedReader(() => readTab('Teams'), 30000);
+async function getTeamsCached() { return teamsReader.get(); }
+function invalidateTeamsCache() { teamsReader.invalidate(); }
 
 // ---------- TASK COMMENTS ----------
 // Per-task discussion — separate from the team group chat. Visibility
@@ -619,11 +647,17 @@ app.post('/api/tasks/:id/comments', requireAuth, async (req, res) => {
 // Notifies the assignee AND every team leader about tasks whose end date
 // has passed while they're still stuck in To Do/In Progress (never
 // submitted for review).
+// In-memory only (not persisted to Config) — this used to read the Config
+// tab on every single /api/state poll just to check "has it been 6 hours
+// yet", which meant every open tab, from every user, was firing an
+// unconditional Sheets read every ~8 seconds regardless of whether the
+// actual check ever ran. That was hammering the read quota far harder than
+// the escalation logic itself ever did.
+let lastOverdueCheckAtMs = 0;
 async function checkOverdueEscalations() {
   try {
-    const lastCheck = await getConfig('lastOverdueCheckAt');
-    if (lastCheck && (Date.now() - new Date(lastCheck).getTime()) < 6 * 60 * 60 * 1000) return;
-    await setConfig('lastOverdueCheckAt', new Date().toISOString());
+    if (Date.now() - lastOverdueCheckAtMs < 6 * 60 * 60 * 1000) return;
+    lastOverdueCheckAtMs = Date.now();
     const [tasksAll, membersAll] = await Promise.all([readTab('Tasks'), readTab('Members')]);
     const todayStr = today();
     const overdue = tasksAll.filter(t => t.assignee && t.endDate && t.endDate < todayStr && (t.status === 'todo' || t.status === 'inprogress'));
@@ -772,7 +806,7 @@ app.get('/api/state', requireAuth, async (req, res) => {
     }
 
     const checklistTemplates = await getChecklistTemplates().catch(() => ({}));
-    res.json({ teams, members, tasks, dashboardTasks, notifications, unreadCount, you: req.user, me, taxonomy: { zoneProjects: ZONE_PROJECTS, taskTypes: TASK_TYPES, revisionNumbers: REVISION_NUMBERS, checklistTemplates, holidays: holidaysCache || [] } });
+    res.json({ teams, members, tasks, dashboardTasks, notifications, unreadCount, you: req.user, me, taxonomy: { zoneProjects: ZONE_PROJECTS, taskTypes: TASK_TYPES, revisionNumbers: REVISION_NUMBERS, checklistTemplates, holidays: holidaysReader.peek() || [] } });
   } catch (e) { sendErr(res, e); }
 });
 
@@ -944,6 +978,7 @@ app.post('/api/tasks', requireAuth, requireAssigner, async (req, res) => {
         startDate, endDate, sequence,
         zone, project, building: building || '', taskType,
         numDrawings, revisionNo, sheetFormat, checklist, taskItem,
+        assignedBy: actorLabel(req.user),
         history: [{ status: 'todo', at: today() }], createdAt: today()
       };
       rows.push(newTask);
@@ -996,6 +1031,7 @@ app.post('/api/tasks/bulk', requireAuth, requireAssigner, async (req, res) => {
           startDate, endDate, sequence,
           zone, project, building, taskType,
           numDrawings: 0, revisionNo: '', sheetFormat: '', checklist, taskItem,
+          assignedBy: actorLabel(req.user),
           history: [{ status: 'todo', at: today() }], createdAt: today()
         };
         rows.push(newTask);
@@ -1090,6 +1126,7 @@ app.put('/api/tasks/:id', requireAuth, requireAssigner, async (req, res) => {
 
       if (newAssignee !== prevAssignee) {
         t.sequence = newAssignee ? scheduler.nextSequence(rows, newAssignee) : 0;
+        if (newAssignee) t.assignedBy = actorLabel(req.user); // whoever most recently (re)assigned it
       }
 
       updated = t;
@@ -1237,7 +1274,7 @@ app.post('/api/tasks/restore', requireAuth, requireLeader, async (req, res) => {
         zone: snapshot.zone || '', project: snapshot.project || '', building: snapshot.building || '', taskType: snapshot.taskType || '',
         numDrawings: snapshot.numDrawings || 0, revisionNo: snapshot.revisionNo || '', sheetFormat: snapshot.sheetFormat || '',
         checklist: Array.isArray(snapshot.checklist) ? snapshot.checklist : [],
-        taskItem: snapshot.taskItem || ''
+        taskItem: snapshot.taskItem || '', assignedBy: snapshot.assignedBy || ''
       };
       if (restoredTask.assignee) {
         scheduler.restoreRemovedTask(rows, restoredTask.assignee, restoredTask);
@@ -1287,7 +1324,7 @@ app.post('/api/tasks/:id/duplicate', requireAuth, requireAssigner, async (req, r
           zone: original.zone || '', project: original.project || '', building: original.building || '', taskType: original.taskType || '',
           numDrawings: original.numDrawings || 0, revisionNo: original.revisionNo || '', sheetFormat: original.sheetFormat || '',
           checklist: Array.isArray(original.checklist) ? original.checklist.map(c => ({ id: genId('cl'), text: c.text, done: false })) : [],
-          taskItem: original.taskItem || ''
+          taskItem: original.taskItem || '', assignedBy: actorLabel(req.user)
         };
         rows.push(dup);
         created.push(dup);
