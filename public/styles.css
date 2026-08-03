@@ -101,7 +101,7 @@ body{background:var(--ink);color:var(--text-on-ink);font-family:'Inter',sans-ser
 .ticket-stub{display:flex;align-items:center;justify-content:space-between;padding:9px 12px;border-bottom:1px dashed var(--line-on-paper);position:relative;}
 .ticket-stub::before{content:'';position:absolute;left:-6px;top:calc(100% - 5px);width:10px;height:10px;background:var(--ink-2);border-radius:50%;}
 .ticket-stub::after{content:'';position:absolute;right:-6px;top:calc(100% - 5px);width:10px;height:10px;background:var(--ink-2);border-radius:50%;}
-.ticket-num{font-family:'IBM Plex Mono',monospace;font-size:10.5px;color:var(--text-dim-on-paper);letter-spacing:0.5px;}
+.ticket-num{font-family:'IBM Plex Mono',monospace;font-size:10.5px;color:var(--text-dim-on-paper);letter-spacing:0.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:100%;}
 .ticket-priority{width:16px;height:16px;border-radius:50%;font-family:'IBM Plex Mono',monospace;font-size:9px;font-weight:700;color:var(--paper);display:flex;align-items:center;justify-content:center;}
 .ticket-body{padding:12px;}
 .ticket-location{font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:.3px;text-transform:uppercase;color:var(--text-dim-on-paper);margin-bottom:4px;}
@@ -219,6 +219,24 @@ body{background:var(--ink);color:var(--text-on-ink);font-family:'Inter',sans-ser
 /* ── Done column month filter ── */
 .done-filter-bar{display:flex;align-items:center;gap:10px;padding:8px 26px;font-size:12px;color:var(--text-dim-on-paper);border-bottom:1px solid var(--line-on-paper);}
 .done-filter-bar select{padding:5px 8px;border-radius:4px;border:1px solid var(--line-on-paper);font-size:12px;font-family:inherit;}
+
+/* ── Custom calendar date picker ── */
+.cal-field{cursor:pointer;background:var(--paper);}
+.cal-field:focus{outline:2px solid var(--amber);outline-offset:1px;}
+.cal-popup{position:fixed;z-index:600;background:var(--paper);border:1px solid var(--line-on-paper);border-radius:8px;box-shadow:0 8px 28px rgba(0,0,0,.3);padding:12px;width:260px;font-family:inherit;}
+.cal-popup-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;}
+.cal-popup-month{font-weight:600;font-size:13px;}
+.cal-nav-btn{background:none;border:1px solid var(--line-on-paper);border-radius:4px;width:26px;height:26px;cursor:pointer;font-size:14px;color:var(--ink);}
+.cal-nav-btn:hover{background:var(--paper-alt, #f0e9db);}
+.cal-popup-weekdays{display:grid;grid-template-columns:repeat(7,1fr);font-family:'IBM Plex Mono',monospace;font-size:9px;text-transform:uppercase;color:var(--text-dim-on-paper);text-align:center;margin-bottom:4px;}
+.cal-popup-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:2px;}
+.cal-day{aspect-ratio:1;display:flex;align-items:center;justify-content:center;border-radius:5px;font-size:12px;cursor:pointer;border:none;background:none;color:var(--ink);}
+.cal-day:hover:not(:disabled){background:var(--amber);color:var(--ink);}
+.cal-day.selected{background:var(--ink);color:var(--text-on-ink);}
+.cal-day.today{font-weight:700;text-decoration:underline;}
+.cal-day:disabled{color:var(--text-dim-on-paper);opacity:.35;cursor:not-allowed;text-decoration:line-through;}
+.cal-day.empty{visibility:hidden;cursor:default;}
+.cal-popup-legend{margin-top:8px;padding-top:8px;border-top:1px solid var(--line-on-paper);font-size:10px;color:var(--text-dim-on-paper);line-height:1.5;}
 
 /* ── Ticket card: comments ── */
 .ticket-comments-toggle{font-size:10.5px;color:var(--text-dim-on-paper);cursor:pointer;margin-top:6px;user-select:none;}

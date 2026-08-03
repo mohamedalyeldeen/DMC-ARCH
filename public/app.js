@@ -906,7 +906,7 @@
 
     el.innerHTML = `
       <div class="ticket-stub">
-        <div class="ticket-num">#${(t.id||'').replace(/\D/g,'').slice(-3).padStart(3,'0')}</div>
+        <div class="ticket-num" title="Assigned by">${escapeHtml(t.assignedBy || '—')}</div>
       </div>
       <div class="ticket-body">
         ${t.taskType ? `<div class="ticket-location">${escapeHtml(t.zone||'')} · ${escapeHtml(t.project||'')}${t.building?' · '+escapeHtml(t.building):''}</div>` : ''}
@@ -2824,6 +2824,126 @@
     }catch(e){ alert(e.message); }
     finally{ btn.disabled = false; }
   });
+
+  // ---------- CUSTOM CALENDAR DATE PICKER ----------
+  // Replaces native <input type="date"> for scheduling fields so we can
+  // grey out and block picking days that can't be a task's start/end (past
+  // days, Friday/Saturday, public holidays) — something a native date
+  // input's browser-controlled popup can't be customized to do at all.
+  // Kept as plain text inputs holding the same ISO string a date input
+  // would, so every existing .value read/write elsewhere still works
+  // unchanged; this only replaces how the value gets picked.
+  let calActiveInput = null;
+  let calViewYear = 0;
+  let calViewMonth = 0; // 0-11
+  function openCalendarFor(inputEl, disableFn){
+    calActiveInput = inputEl;
+    calActiveInput._calDisableFn = disableFn;
+    let seedValue = inputEl.value;
+    // If End Date is still empty, open on Start Date's month instead of
+    // today's — saves clicking forward through months by hand when the
+    // task is scheduled well into the future.
+    if(!seedValue && inputEl.id==='fEndDate'){
+      const startEl = document.getElementById('fStartDate');
+      if(startEl && startEl.value) seedValue = startEl.value;
+    }
+    const current = seedValue ? parseIsoUTC(seedValue) : new Date();
+    calViewYear = current.getUTCFullYear();
+    calViewMonth = current.getUTCMonth();
+    renderCalendarPopup();
+    positionCalendarPopup(inputEl);
+    document.getElementById('calPopup').style.display = 'block';
+  }
+  function closeCalendarPopup(){
+    document.getElementById('calPopup').style.display = 'none';
+    calActiveInput = null;
+  }
+  function positionCalendarPopup(inputEl){
+    const popup = document.getElementById('calPopup');
+    const rect = inputEl.getBoundingClientRect();
+    const popupWidth = 260;
+    let left = rect.left;
+    if(left + popupWidth > window.innerWidth - 10) left = Math.max(10, window.innerWidth - popupWidth - 10);
+    popup.style.left = left+'px';
+    popup.style.top = (rect.bottom + 6)+'px';
+  }
+  function renderCalendarPopup(){
+    const monthLabel = new Date(Date.UTC(calViewYear, calViewMonth, 1)).toLocaleDateString([], {month:'long', year:'numeric', timeZone:'UTC'});
+    document.getElementById('calMonthLabel').textContent = monthLabel;
+    const weekdayNames = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+    document.getElementById('calWeekdays').innerHTML = weekdayNames.map(w=>`<div>${w}</div>`).join('');
+
+    const firstDay = new Date(Date.UTC(calViewYear, calViewMonth, 1));
+    const startWeekday = firstDay.getUTCDay(); // 0=Sun
+    const daysInMonth = new Date(Date.UTC(calViewYear, calViewMonth+1, 0)).getUTCDate();
+    const todayIso = todayStr();
+    const selectedIso = calActiveInput ? calActiveInput.value : '';
+    const disableFn = (calActiveInput && calActiveInput._calDisableFn) || null;
+
+    let cells = [];
+    for(let i=0;i<startWeekday;i++) cells.push('<div class="cal-day empty"></div>');
+    for(let d=1; d<=daysInMonth; d++){
+      const iso = calViewYear+'-'+String(calViewMonth+1).padStart(2,'0')+'-'+String(d).padStart(2,'0');
+      const disabled = disableFn ? disableFn(iso) : false;
+      const classes = ['cal-day'];
+      if(iso===todayIso) classes.push('today');
+      if(iso===selectedIso) classes.push('selected');
+      cells.push(`<button type="button" class="${classes.join(' ')}" data-iso="${iso}" ${disabled?'disabled':''}>${d}</button>`);
+    }
+    document.getElementById('calGrid').innerHTML = cells.join('');
+    document.getElementById('calGrid').querySelectorAll('.cal-day[data-iso]').forEach(btn=>{
+      btn.addEventListener('click', ()=>{
+        if(!calActiveInput) return;
+        calActiveInput.value = btn.dataset.iso;
+        calActiveInput.dispatchEvent(new Event('change', {bubbles:true}));
+        closeCalendarPopup();
+      });
+    });
+    const legend = document.getElementById('calLegend');
+    if(disableFn){
+      legend.style.display = 'block';
+      legend.textContent = 'Greyed out: past days, Friday/Saturday, and public holidays.';
+    } else {
+      legend.style.display = 'none';
+    }
+  }
+  document.getElementById('calPrevBtn').addEventListener('click', ()=>{
+    calViewMonth--; if(calViewMonth<0){ calViewMonth=11; calViewYear--; }
+    renderCalendarPopup();
+  });
+  document.getElementById('calNextBtn').addEventListener('click', ()=>{
+    calViewMonth++; if(calViewMonth>11){ calViewMonth=0; calViewYear++; }
+    renderCalendarPopup();
+  });
+  document.addEventListener('mousedown', (e)=>{
+    const popup = document.getElementById('calPopup');
+    if(popup.style.display==='none') return;
+    if(popup.contains(e.target)) return;
+    if(calActiveInput && e.target===calActiveInput) return;
+    closeCalendarPopup();
+  });
+
+  // Disable-day logic for task scheduling fields: past days, weekend
+  // (Fri/Sat), and public holidays — isWeekendIso already covers both the
+  // weekend rule and the taxonomy.holidays list.
+  function isSchedulingDayDisabled(iso){
+    if(iso < todayStr()) return true;
+    return isWeekendIso(iso);
+  }
+  function attachCalendarPicker(inputId, disableFn){
+    const el = document.getElementById(inputId);
+    if(!el) return;
+    el.addEventListener('click', ()=> openCalendarFor(el, disableFn));
+    el.addEventListener('focus', ()=> openCalendarFor(el, disableFn));
+  }
+  // Task scheduling: restrict to valid working days. Leave logging: any
+  // calendar day is a legitimate start/end (the app already extracts just
+  // the working days from within whatever range is picked), so no
+  // restriction there — same picker, just without the disable rule.
+  attachCalendarPicker('fStartDate', isSchedulingDayDisabled);
+  attachCalendarPicker('fEndDate', isSchedulingDayDisabled);
+  attachCalendarPicker('lvStartDate', null);
+  attachCalendarPicker('lvEndDate', null);
 
   boot();
 })();

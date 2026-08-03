@@ -145,8 +145,8 @@
       </div>
       <div id="manualDatesFields">
         <div class="field-row">
-          <div class="field"><label>Start date</label><input type="date" id="fStartDate"></div>
-          <div class="field"><label>End date</label><input type="date" id="fEndDate"></div>
+          <div class="field"><label>Start date</label><input type="text" id="fStartDate" class="cal-field" readonly placeholder="Select a date…"></div>
+          <div class="field"><label>End date</label><input type="text" id="fEndDate" class="cal-field" readonly placeholder="Select a date…"></div>
         </div>
         <div class="weekend-hint">Friday and Saturday are non-working days — start and end dates can't fall on either.</div>
         <div class="field-error" id="dateFieldError">Friday and Saturday are non-working days — pick a different start or end date.</div>
@@ -241,8 +241,8 @@
       </select>
     </div>
     <div class="field-row">
-      <div class="field"><label>Start date</label><input type="date" id="lvStartDate"></div>
-      <div class="field"><label>End date</label><input type="date" id="lvEndDate"></div>
+      <div class="field"><label>Start date</label><input type="text" id="lvStartDate" class="cal-field" readonly placeholder="Select a date…"></div>
+      <div class="field"><label>End date</label><input type="text" id="lvEndDate" class="cal-field" readonly placeholder="Select a date…"></div>
     </div>
     <div class="field-error" id="lvError">Pick an engineer and a valid date range.</div>
     <div class="modal-actions">
@@ -303,6 +303,17 @@
     <p id="celebrationMessage">Great job! You completed all of your assigned tasks on time. Keep up the excellent work!</p>
     <button type="button" class="celebration-continue" id="celebrationContinueBtn">Continue</button>
   </div>
+</div>
+
+<div id="calPopup" class="cal-popup" style="display:none;">
+  <div class="cal-popup-header">
+    <button type="button" class="cal-nav-btn" id="calPrevBtn">‹</button>
+    <div class="cal-popup-month" id="calMonthLabel">July 2026</div>
+    <button type="button" class="cal-nav-btn" id="calNextBtn">›</button>
+  </div>
+  <div class="cal-popup-weekdays" id="calWeekdays"></div>
+  <div class="cal-popup-grid" id="calGrid"></div>
+  <div class="cal-popup-legend" id="calLegend"></div>
 </div>
 
 <div id="chatBubbleBtn" class="chat-bubble-btn" style="display:none;">💬</div>
