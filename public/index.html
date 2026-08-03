@@ -254,6 +254,24 @@
   </div>
 </div>
 
+<div class="modal-overlay" id="dailyReportModalOverlay">
+  <div class="modal">
+    <h3>Export Daily Report</h3>
+    <p style="font-size:12.5px;color:var(--text-dim-on-paper);margin-top:-8px;">One row per calendar day (plus one per task completed that day), with attendance/leave state, weekend/holiday marking, and the productivity weighting — matches the format used for the company's tracking sheet.</p>
+    <div class="field" id="drEngineerField" style="display:none;">
+      <label>Engineer</label>
+      <select id="drEngineer"><option value="all">All engineers (adds a name column)</option></select>
+    </div>
+    <div class="field"><label>Month</label><input type="month" id="drMonth"></div>
+    <div class="modal-actions">
+      <div style="margin-left:auto;display:flex;gap:10px;">
+        <button type="button" class="btn-cancel" id="cancelDailyReportBtn">Cancel</button>
+        <button type="button" class="btn-primary" id="confirmDailyReportBtn">Export CSV</button>
+      </div>
+    </div>
+  </div>
+</div>
+
 <div class="modal-overlay" id="bulkModalOverlay">
   <div class="modal">
     <h3>Bulk assign tasks</h3>

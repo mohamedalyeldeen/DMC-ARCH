@@ -2026,7 +2026,10 @@
       el.innerHTML = `
         ${renderOverdueWidget(pool)}
         <div class="dash-card">
-          <h3>Your performance</h3>
+          <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;">
+            <h3 style="margin:0;">Your performance</h3>
+            <button type="button" class="ghost-btn" id="openDailyReportBtn" style="font-size:11.5px;padding:6px 12px;">⬇ Daily report</button>
+          </div>
           <div class="dash-stats-row">
             <div class="dash-stat"><div class="num">${s.total}</div><div class="lbl">Assigned</div></div>
             <div class="dash-stat"><div class="num">${s.open}</div><div class="lbl">Open</div></div>
@@ -2041,6 +2044,7 @@
         ${renderEstimatedVsActualCard(pool)}
       `;
       wireEstimatedVsActualFilters();
+      document.getElementById('openDailyReportBtn').addEventListener('click', openDailyReportModal);
     }
   }
 
@@ -2089,7 +2093,10 @@
       <div class="dash-card">
         <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;">
           <h3 style="margin:0;">Team capacity</h3>
-          ${isLeader() ? '<button type="button" class="ghost-btn" id="openLeaveModalBtn" style="font-size:11.5px;padding:6px 12px;">+ Log leave</button>' : ''}
+          <div style="display:flex;gap:8px;flex-wrap:wrap;">
+            <button type="button" class="ghost-btn" id="openDailyReportBtn" style="font-size:11.5px;padding:6px 12px;">⬇ Daily report</button>
+            ${isLeader() ? '<button type="button" class="ghost-btn" id="openLeaveModalBtn" style="font-size:11.5px;padding:6px 12px;">+ Log leave</button>' : ''}
+          </div>
         </div>
         <div class="sort-toggle" style="margin-top:14px;">
           <button class="mini-btn ${capacitySortMode==='availability'?'primary':''}" id="sortByAvailBtn">Sort by availability</button>
@@ -2102,6 +2109,7 @@
     document.getElementById('sortByCapBtn').addEventListener('click', ()=>{ capacitySortMode='capacity'; renderCapacityList(); });
     const leaveBtn = document.getElementById('openLeaveModalBtn');
     if(leaveBtn) leaveBtn.addEventListener('click', openLeaveModal);
+    document.getElementById('openDailyReportBtn').addEventListener('click', openDailyReportModal);
   }
 
   // ---------- PRODUCTIVITY DASHBOARD (Power-BI-style charts) ----------
@@ -2376,6 +2384,113 @@
     downloadCsv(`completed-tasks-${todayStr()}.csv`, [header, ...body]);
   }
 
+  // ---------- DAILY REPORT EXPORT ----------
+  // One row per calendar day (plus one per task completed that day),
+  // matching the company's existing tracking-sheet format: attendance/
+  // leave state, weekend/holiday marking, and the same productivity
+  // weighting used everywhere else in the app (Value = the per-drawing
+  // weight, Tot No of DWG = No of DWG × Value).
+  function openDailyReportModal(){
+    modalOpenFlag = true;
+    const engineerField = document.getElementById('drEngineerField');
+    if(isLeaderLike()){
+      engineerField.style.display = 'block';
+      const options = productivityVisibleMembers();
+      document.getElementById('drEngineer').innerHTML = '<option value="all">All engineers (adds a name column)</option>' +
+        options.map(m=>`<option value="${m.id}">${escapeHtml(m.name)}</option>`).join('');
+    } else {
+      engineerField.style.display = 'none';
+    }
+    const now = new Date();
+    document.getElementById('drMonth').value = now.getFullYear()+'-'+String(now.getMonth()+1).padStart(2,'0');
+    document.getElementById('dailyReportModalOverlay').classList.add('open');
+  }
+  function closeDailyReportModal(){ document.getElementById('dailyReportModalOverlay').classList.remove('open'); modalOpenFlag=false; }
+  document.getElementById('cancelDailyReportBtn').addEventListener('click', closeDailyReportModal);
+  document.getElementById('dailyReportModalOverlay').addEventListener('click', (e)=>{ if(e.target.id==='dailyReportModalOverlay') closeDailyReportModal(); });
+  document.getElementById('confirmDailyReportBtn').addEventListener('click', async ()=>{
+    const monthStr = document.getElementById('drMonth').value;
+    if(!monthStr) return;
+    const engineerSel = isLeaderLike() ? document.getElementById('drEngineer').value : session.id;
+    const btn = document.getElementById('confirmDailyReportBtn');
+    btn.disabled = true;
+    try{
+      const memberIds = engineerSel==='all' ? productivityVisibleMembers().map(m=>m.id) : [engineerSel];
+      await generateDailyReportCsv(memberIds, monthStr);
+      closeDailyReportModal();
+    }catch(e){ alert(e.message); }
+    finally{ btn.disabled = false; }
+  });
+
+  async function generateDailyReportCsv(memberIds, monthStr){
+    // Leaves aren't part of the regular polled state (they're read rarely,
+    // only when actually needed) — fetch fresh here.
+    const leavesData = await api('GET', '/api/leaves');
+    const leaves = leavesData.leaves || [];
+    const holidays = (state.taxonomy && state.taxonomy.holidays) || [];
+    const showNameCol = memberIds.length > 1;
+
+    const [year, month] = monthStr.split('-').map(Number);
+    const daysInMonth = new Date(Date.UTC(year, month, 0)).getUTCDate();
+
+    const header = ['Date','Day','Weekend','State', ...(showNameCol?['Engineer']:[]),
+      'Project','Area / Zone','Package','Item','TYPE','Subtype','REV NO','VALUE','NO OF DWG','TOT NO OF DWG','Task Description'];
+    const rows = [];
+
+    memberIds.forEach(memberId=>{
+      const member = memberById(memberId);
+      const memberName = member ? member.name : '';
+      const memberLeaves = leaves.filter(l=>l.memberId===memberId);
+      // Any status, not just Done — a task shows on every one of its
+      // scheduled working days regardless of whether it's finished yet;
+      // only the LAST day (its endDate — the delivery day) carries the
+      // actual drawing count.
+      const memberTasks = (state.tasks||[]).filter(t=>t.assignee===memberId && t.startDate && t.endDate);
+
+      for(let d=1; d<=daysInMonth; d++){
+        const iso = year+'-'+String(month).padStart(2,'0')+'-'+String(d).padStart(2,'0');
+        const dayDate = new Date(Date.UTC(year, month-1, d));
+        const dayName = dayDate.toLocaleDateString([], {weekday:'long', timeZone:'UTC'});
+        const dow = dayDate.getUTCDay();
+        const isWeekendDay = dow===5 || dow===6;
+        const isHoliday = holidays.includes(iso);
+        const weekendLabel = (isWeekendDay || isHoliday) ? 'Weekend' : '';
+
+        const leaveHit = memberLeaves.find(l=> iso>=l.startDate && iso<=l.endDate);
+        let stateLabel;
+        if(leaveHit) stateLabel = leaveHit.type==='sick' ? 'Vacation' : 'Absent';
+        else if(isWeekendDay || isHoliday) stateLabel = '';
+        else stateLabel = 'At work';
+
+        const nameCell = showNameCol ? [memberName] : [];
+
+        // Weekends/holidays never carry task rows, even if a task's date
+        // range technically spans over one in between its start and end
+        // (e.g. a task running Wed-Tue crosses a weekend) — nobody's
+        // actually working that day, so it stays a plain "Weekend" row.
+        const dayTasks = (isWeekendDay || isHoliday) ? [] : memberTasks.filter(t=> iso>=t.startDate && iso<=t.endDate);
+
+        if(dayTasks.length===0){
+          rows.push([iso, dayName, weekendLabel, stateLabel, ...nameCell, '','','','','','','','','','','']);
+        } else {
+          dayTasks.forEach(t=>{
+            const isDeliveryDay = iso === t.endDate;
+            const value = isDeliveryDay ? taskProductivityUnitWeight(t) : '';
+            const numDwg = isDeliveryDay ? (t.numDrawings||0) : '';
+            const tot = isDeliveryDay ? taskProductivityWeight(t) : '';
+            rows.push([
+              iso, dayName, weekendLabel, stateLabel, ...nameCell,
+              t.project||'', t.zone||'', t.building||'', t.taskItem||'', t.taskType||'',
+              t.sheetFormat || 'INFO', t.revisionNo||'', value, numDwg, tot, t.description||''
+            ]);
+          });
+        }
+      }
+    });
+
+    downloadCsv(`daily-report-${monthStr}${showNameCol?'-all':'-'+((memberById(memberIds[0])||{}).name||'me')}.csv`, [header, ...rows]);
+  }
+
   function filteredLogRows(){
     return doneTasksPool().filter(t=>{
       if(logFilters.engineer && t.assignee!==logFilters.engineer) return false;
@@ -2459,22 +2574,25 @@
   // RFP and QS count at face value; Clean Copy and As Built count at half
   // weight; SD depends on how it was made — CAD counts at face value, BIM
   // counts at 2.5x (BIM shop drawings represent proportionally more work).
-  function taskProductivityWeight(t){
+  function taskProductivityUnitWeight(t){
     if(t.revisionNo !== 'Rev.0') return 0;
-    const n = parseInt(t.numDrawings,10)||0;
-    if(n<=0) return 0;
     switch(t.taskType){
       case 'RFP':
       case 'QS':
-        return n * 1;
+        return 1;
       case 'Clean Copy':
       case 'As Built':
-        return n * 0.5;
+        return 0.5;
       case 'SD':
-        return n * (t.sheetFormat==='BIM' ? 2.5 : 1);
+        return t.sheetFormat==='BIM' ? 2.5 : 1;
       default:
         return 0;
     }
+  }
+  function taskProductivityWeight(t){
+    const n = parseInt(t.numDrawings,10)||0;
+    if(n<=0) return 0;
+    return n * taskProductivityUnitWeight(t);
   }
 
   function computeProductivity(memberId, month){
