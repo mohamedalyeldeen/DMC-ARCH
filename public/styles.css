@@ -223,7 +223,7 @@ body{background:var(--ink);color:var(--text-on-ink);font-family:'Inter',sans-ser
 /* ── Custom calendar date picker ── */
 .cal-field{cursor:pointer;background:var(--paper);}
 .cal-field:focus{outline:2px solid var(--amber);outline-offset:1px;}
-.cal-popup{position:fixed;z-index:600;background:var(--paper);border:1px solid var(--line-on-paper);border-radius:8px;box-shadow:0 8px 28px rgba(0,0,0,.3);padding:12px;width:260px;font-family:inherit;}
+.cal-popup{position:fixed;z-index:600;background:var(--paper);border:1px solid var(--line-on-paper);border-radius:8px;box-shadow:0 8px 28px rgba(0,0,0,.3);padding:12px;width:260px;max-height:calc(100vh - 20px);overflow-y:auto;font-family:inherit;}
 .cal-popup-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;}
 .cal-popup-month{font-weight:600;font-size:13px;}
 .cal-nav-btn{background:none;border:1px solid var(--line-on-paper);border-radius:4px;width:26px;height:26px;cursor:pointer;font-size:14px;color:var(--ink);}

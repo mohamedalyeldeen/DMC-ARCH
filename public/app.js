@@ -2851,8 +2851,14 @@
     calViewYear = current.getUTCFullYear();
     calViewMonth = current.getUTCMonth();
     renderCalendarPopup();
+    const popup = document.getElementById('calPopup');
+    // Has to be actually displayed (even if invisible) before its size can
+    // be measured for positioning — offsetWidth/Height are always 0 while
+    // display:none.
+    popup.style.visibility = 'hidden';
+    popup.style.display = 'block';
     positionCalendarPopup(inputEl);
-    document.getElementById('calPopup').style.display = 'block';
+    popup.style.visibility = 'visible';
   }
   function closeCalendarPopup(){
     document.getElementById('calPopup').style.display = 'none';
@@ -2861,11 +2867,22 @@
   function positionCalendarPopup(inputEl){
     const popup = document.getElementById('calPopup');
     const rect = inputEl.getBoundingClientRect();
-    const popupWidth = 260;
+    const popupWidth = popup.offsetWidth || 260;
+    const popupHeight = popup.offsetHeight || 320;
+
     let left = rect.left;
     if(left + popupWidth > window.innerWidth - 10) left = Math.max(10, window.innerWidth - popupWidth - 10);
+
+    // Prefer opening below the field; if there isn't room before the
+    // bottom of the viewport, flip to above it instead — this is what was
+    // cutting the calendar off when the field sat low in a tall form.
+    let top = rect.bottom + 6;
+    if(top + popupHeight > window.innerHeight - 10){
+      const above = rect.top - popupHeight - 6;
+      top = above >= 10 ? above : Math.max(10, window.innerHeight - popupHeight - 10);
+    }
     popup.style.left = left+'px';
-    popup.style.top = (rect.bottom + 6)+'px';
+    popup.style.top = top+'px';
   }
   function renderCalendarPopup(){
     const monthLabel = new Date(Date.UTC(calViewYear, calViewMonth, 1)).toLocaleDateString([], {month:'long', year:'numeric', timeZone:'UTC'});
@@ -2921,6 +2938,11 @@
     if(popup.contains(e.target)) return;
     if(calActiveInput && e.target===calActiveInput) return;
     closeCalendarPopup();
+  });
+  window.addEventListener('resize', ()=>{
+    if(calActiveInput && document.getElementById('calPopup').style.display==='block'){
+      positionCalendarPopup(calActiveInput);
+    }
   });
 
   // Disable-day logic for task scheduling fields: past days, weekend
