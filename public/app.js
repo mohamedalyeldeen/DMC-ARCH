@@ -325,6 +325,7 @@
     renderNotifBadge();
     renderSidebar();
     document.getElementById('tabCapacityBtn').style.display = isLeaderLike() ? 'inline-block' : 'none';
+    document.getElementById('tabProgressBtn').style.display = isLeaderLike() ? 'inline-block' : 'none';
     document.getElementById('myStatsBtn').style.display = (isOwner() || isViewer()) ? 'none' : 'inline-block';
     document.getElementById('board').style.display='none';
     document.getElementById('doneFilterBar').style.display='none';
@@ -333,6 +334,7 @@
     document.getElementById('logView').style.display='none';
     document.getElementById('prodDashboardView').style.display='none';
     document.getElementById('capacityView').style.display='none';
+    document.getElementById('progressView').style.display='none';
     document.getElementById('bulkAssignBtn').style.display='none';
     if(activeTab==='board'){
       document.getElementById('viewTitle').textContent = isLeaderLike() ? "This Week's Jobs" : 'My Tasks';
@@ -362,6 +364,11 @@
       document.getElementById('prodDashboardView').style.display='block';
       document.getElementById('newTaskBtn').style.display='none';
       renderProductivityDashboard();
+    } else if(activeTab==='progress'){
+      document.getElementById('viewTitle').textContent = 'Progress';
+      document.getElementById('progressView').style.display='block';
+      document.getElementById('newTaskBtn').style.display='none';
+      renderProgressView();
     } else {
       document.getElementById('viewTitle').textContent = 'Capacity';
       document.getElementById('capacityView').style.display='block';
@@ -455,7 +462,7 @@
     catch(e){ alert(e.message); }
   });
 
-  const ALL_TAB_BTNS = ['tabBoardBtn','tabGanttBtn','tabDashBtn','tabLogBtn','tabProdDashBtn','tabCapacityBtn'];
+  const ALL_TAB_BTNS = ['tabBoardBtn','tabGanttBtn','tabDashBtn','tabLogBtn','tabProdDashBtn','tabCapacityBtn','tabProgressBtn'];
   function activateTab(name, btnId){
     activeTab = name;
     ALL_TAB_BTNS.forEach(id=> document.getElementById(id).classList.toggle('active', id===btnId));
@@ -467,6 +474,7 @@
   document.getElementById('tabLogBtn').addEventListener('click', ()=> activateTab('log','tabLogBtn'));
   document.getElementById('tabProdDashBtn').addEventListener('click', ()=> activateTab('proddash','tabProdDashBtn'));
   document.getElementById('tabCapacityBtn').addEventListener('click', ()=> activateTab('capacity','tabCapacityBtn'));
+  document.getElementById('tabProgressBtn').addEventListener('click', ()=> activateTab('progress','tabProgressBtn'));
 
   function renderStats(){
     const visible = isLeaderLike() ? state.tasks : state.tasks;
@@ -2049,6 +2057,81 @@
   }
 
   let capacityLoaded = false;
+  // ---------- PROGRESS VIEW (2D building scope-of-work towers) ----------
+  // Each Building within a Zone/Project becomes a "tower"; each floor is one
+  // task belonging to that building, colored by its current status. Uses
+  // entirely existing data (zone/project/building/status) — no new fields.
+  let progressZone = '';
+  let progressProject = '';
+  function progressFloorColor(t){
+    if(t.status!=='done' && t.endDate && t.endDate < todayStr()) return 'var(--rust)'; // overdue takes priority
+    switch(t.status){
+      case 'done': return '#5C8F55';
+      case 'submitted': return 'var(--teal)';
+      case 'inprogress': return 'var(--amber)';
+      default: return 'var(--text-dim-on-ink)'; // todo
+    }
+  }
+  function renderProgressView(){
+    const el = document.getElementById('progressView');
+    const zones = Object.keys((state.taxonomy && state.taxonomy.zoneProjects) || {});
+    if(!progressZone && zones.length) progressZone = zones[0];
+    const projects = (state.taxonomy && state.taxonomy.zoneProjects[progressZone]) || [];
+    if(!projects.includes(progressProject)) progressProject = projects[0] || '';
+
+    el.innerHTML = `
+      <div class="dash-card">
+        <div class="progress-filters">
+          <select id="progressZoneSel">${zones.map(z=>`<option value="${escapeHtml(z)}" ${z===progressZone?'selected':''}>${escapeHtml(z)}</option>`).join('')}</select>
+          <select id="progressProjectSel">${projects.map(p=>`<option value="${escapeHtml(p)}" ${p===progressProject?'selected':''}>${escapeHtml(p)}</option>`).join('')}</select>
+        </div>
+        <div class="progress-towers" id="progressTowersWrap"></div>
+      </div>
+    `;
+    document.getElementById('progressZoneSel').addEventListener('change', (e)=>{
+      progressZone = e.target.value; progressProject = '';
+      renderProgressView();
+    });
+    document.getElementById('progressProjectSel').addEventListener('change', (e)=>{
+      progressProject = e.target.value;
+      renderProgressTowers();
+    });
+    renderProgressTowers();
+  }
+  function renderProgressTowers(){
+    const wrap = document.getElementById('progressTowersWrap');
+    if(!wrap) return;
+    const tasks = (state.tasks||[]).filter(t=>t.zone===progressZone && t.project===progressProject);
+    const buildings = Array.from(new Set(tasks.map(t=>t.building).filter(Boolean))).sort();
+    if(buildings.length===0){
+      wrap.innerHTML = '<div class="notif-empty">No buildings with tasks in this project yet.</div>';
+      return;
+    }
+    wrap.innerHTML = buildings.map(b=>{
+      const buildingTasks = tasks.filter(t=>t.building===b)
+        .sort((a,b2)=> (a.startDate||'').localeCompare(b2.startDate||''));
+      const doneCount = buildingTasks.filter(t=>t.status==='done').length;
+      const floors = buildingTasks.length ? buildingTasks.map(t=>{
+        const overdue = t.status!=='done' && t.endDate && t.endDate < todayStr();
+        const label = t.taskItem || t.taskType || t.title;
+        return `<div class="progress-floor ${overdue?'overdue':''}" style="background:${progressFloorColor(t)};" data-task-id="${t.id}" title="${escapeHtml(t.title)} — ${escapeHtml((memberById(t.assignee)||{}).name||'Unassigned')}">${escapeHtml(label)}</div>`;
+      }).join('') : '';
+      return `
+        <div class="progress-tower-col">
+          <div class="progress-tower-label">${escapeHtml(b)}</div>
+          <div class="progress-tower-sub">${doneCount}/${buildingTasks.length} done</div>
+          ${floors ? `<div class="progress-tower">${floors}</div>` : '<div class="progress-empty-tower">No tasks</div>'}
+        </div>
+      `;
+    }).join('');
+    wrap.querySelectorAll('.progress-floor[data-task-id]').forEach(el=>{
+      el.addEventListener('click', ()=>{
+        const t = state.tasks.find(x=>x.id===el.dataset.taskId);
+        if(t && canAssignThisTask(t)) openTaskModal(t.id);
+      });
+    });
+  }
+
   async function loadAndRenderCapacity(){
     const el = document.getElementById('capacityView');
     // Only show the loading placeholder the first time — this gets called
