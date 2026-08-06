@@ -2056,38 +2056,46 @@
     }
   }
 
-  let capacityLoaded = false;
   // ---------- PROGRESS VIEW (2D building scope-of-work towers) ----------
-  // Each Building within a Zone/Project becomes a "tower"; each floor is one
-  // task belonging to that building, colored by its current status. Uses
-  // entirely existing data (zone/project/building/status) — no new fields.
+  // Deliberately independent of the Tasks board — most in-flight projects
+  // started long before this app did, so a board-linked version would show
+  // empty/wrong towers for exactly the projects this is meant to track.
+  // Owner enters scope items directly in the ProjectScope sheet tab; anyone
+  // who can see this tab can click a floor to flip it done <-> not started.
   let progressZone = '';
   let progressProject = '';
-  function progressFloorColor(t){
-    if(t.status!=='done' && t.endDate && t.endDate < todayStr()) return 'var(--rust)'; // overdue takes priority
-    switch(t.status){
-      case 'done': return '#5C8F55';
-      case 'submitted': return 'var(--teal)';
-      case 'inprogress': return 'var(--amber)';
-      default: return 'var(--text-dim-on-ink)'; // todo
-    }
+  let progressScopeCache = null; // loaded once per visit to the tab, refreshed on toggle
+  function progressFloorColor(status){
+    return status==='done' ? '#5C8F55' : 'var(--text-dim-on-ink)';
   }
-  function renderProgressView(){
+  async function renderProgressView(){
     const el = document.getElementById('progressView');
-    const zones = Object.keys((state.taxonomy && state.taxonomy.zoneProjects) || {});
+    el.innerHTML = '<div class="dash-card"><div class="notif-empty">Loading…</div></div>';
+    try{
+      const data = await api('GET', '/api/project-scope');
+      progressScopeCache = data.scope || [];
+    }catch(e){
+      el.innerHTML = `<div class="dash-card"><div class="notif-empty">Could not load scope data: ${escapeHtml(e.message)}</div></div>`;
+      return;
+    }
+    const zones = Array.from(new Set(progressScopeCache.map(r=>r.zone))).sort();
     if(!progressZone && zones.length) progressZone = zones[0];
-    const projects = (state.taxonomy && state.taxonomy.zoneProjects[progressZone]) || [];
+    const projects = Array.from(new Set(progressScopeCache.filter(r=>r.zone===progressZone).map(r=>r.project))).sort();
     if(!projects.includes(progressProject)) progressProject = projects[0] || '';
 
     el.innerHTML = `
       <div class="dash-card">
-        <div class="progress-filters">
-          <select id="progressZoneSel">${zones.map(z=>`<option value="${escapeHtml(z)}" ${z===progressZone?'selected':''}>${escapeHtml(z)}</option>`).join('')}</select>
-          <select id="progressProjectSel">${projects.map(p=>`<option value="${escapeHtml(p)}" ${p===progressProject?'selected':''}>${escapeHtml(p)}</option>`).join('')}</select>
-        </div>
-        <div class="progress-towers" id="progressTowersWrap"></div>
+        <div style="font-size:11px;color:var(--text-dim-on-ink);margin-bottom:14px;">Tracked manually — this is independent of the task board, so it works for projects that were already underway before this app. ${isLeader()?'Click a floor to mark it done.':''}</div>
+        ${zones.length===0 ? '<div class="notif-empty">No scope data yet — add rows to the ProjectScope sheet tab to get started.</div>' : `
+          <div class="progress-filters">
+            <select id="progressZoneSel">${zones.map(z=>`<option value="${escapeHtml(z)}" ${z===progressZone?'selected':''}>${escapeHtml(z)}</option>`).join('')}</select>
+            <select id="progressProjectSel">${projects.map(p=>`<option value="${escapeHtml(p)}" ${p===progressProject?'selected':''}>${escapeHtml(p)}</option>`).join('')}</select>
+          </div>
+          <div class="progress-towers" id="progressTowersWrap"></div>
+        `}
       </div>
     `;
+    if(zones.length===0) return;
     document.getElementById('progressZoneSel').addEventListener('change', (e)=>{
       progressZone = e.target.value; progressProject = '';
       renderProgressView();
@@ -2100,34 +2108,39 @@
   }
   function renderProgressTowers(){
     const wrap = document.getElementById('progressTowersWrap');
-    if(!wrap) return;
-    const tasks = (state.tasks||[]).filter(t=>t.zone===progressZone && t.project===progressProject);
-    const buildings = Array.from(new Set(tasks.map(t=>t.building).filter(Boolean))).sort();
+    if(!wrap || !progressScopeCache) return;
+    const rows = progressScopeCache.filter(r=>r.zone===progressZone && r.project===progressProject);
+    const buildings = Array.from(new Set(rows.map(r=>r.building).filter(Boolean))).sort();
     if(buildings.length===0){
-      wrap.innerHTML = '<div class="notif-empty">No buildings with tasks in this project yet.</div>';
+      wrap.innerHTML = '<div class="notif-empty">No buildings for this project yet.</div>';
       return;
     }
+    const canToggle = isLeader();
     wrap.innerHTML = buildings.map(b=>{
-      const buildingTasks = tasks.filter(t=>t.building===b)
-        .sort((a,b2)=> (a.startDate||'').localeCompare(b2.startDate||''));
-      const doneCount = buildingTasks.filter(t=>t.status==='done').length;
-      const floors = buildingTasks.length ? buildingTasks.map(t=>{
-        const overdue = t.status!=='done' && t.endDate && t.endDate < todayStr();
-        const label = t.taskItem || t.taskType || t.title;
-        return `<div class="progress-floor ${overdue?'overdue':''}" style="background:${progressFloorColor(t)};" data-task-id="${t.id}" title="${escapeHtml(t.title)} — ${escapeHtml((memberById(t.assignee)||{}).name||'Unassigned')}">${escapeHtml(label)}</div>`;
-      }).join('') : '';
+      const items = rows.filter(r=>r.building===b).sort((a,c)=> (a.order||0)-(c.order||0));
+      const doneCount = items.filter(r=>r.status==='done').length;
+      const floors = items.map(r=>
+        `<div class="progress-floor" style="background:${progressFloorColor(r.status)};${canToggle?'':'cursor:default;'}" data-item="${escapeHtml(r.item)}" title="${escapeHtml(r.item)} — ${r.status==='done'?'Done':'Not started'}">${escapeHtml(r.item)}</div>`
+      ).join('');
       return `
         <div class="progress-tower-col">
           <div class="progress-tower-label">${escapeHtml(b)}</div>
-          <div class="progress-tower-sub">${doneCount}/${buildingTasks.length} done</div>
-          ${floors ? `<div class="progress-tower">${floors}</div>` : '<div class="progress-empty-tower">No tasks</div>'}
+          <div class="progress-tower-sub">${doneCount}/${items.length} done</div>
+          ${floors ? `<div class="progress-tower">${floors}</div>` : '<div class="progress-empty-tower">No items</div>'}
         </div>
       `;
     }).join('');
-    wrap.querySelectorAll('.progress-floor[data-task-id]').forEach(el=>{
-      el.addEventListener('click', ()=>{
-        const t = state.tasks.find(x=>x.id===el.dataset.taskId);
-        if(t && canAssignThisTask(t)) openTaskModal(t.id);
+    if(!canToggle) return;
+    wrap.querySelectorAll('.progress-floor[data-item]').forEach(floorEl=>{
+      floorEl.addEventListener('click', async ()=>{
+        const towerCol = floorEl.closest('.progress-tower-col');
+        const building = towerCol.querySelector('.progress-tower-label').textContent;
+        try{
+          const updated = await api('POST', '/api/project-scope/toggle', {zone: progressZone, project: progressProject, building, item: floorEl.dataset.item});
+          const row = progressScopeCache.find(r=>r.zone===progressZone && r.project===progressProject && r.building===building && r.item===floorEl.dataset.item);
+          if(row) row.status = updated.status;
+          renderProgressTowers();
+        }catch(e){ alert(e.message); }
       });
     });
   }
