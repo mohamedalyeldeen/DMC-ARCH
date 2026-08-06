@@ -739,9 +739,36 @@ app.get('/api/leaves', requireAuth, async (req, res) => {
   } catch (e) { sendErr(res, e); }
 });
 
+// ---------- PROJECT SCOPE (manual, independent of the Tasks board) ----------
+// Rows are owner-entered directly in the sheet (no `id` column, matching
+// ChecklistTemplates' pattern) — matched by (zone,project,building,item)
+// for the toggle below, since that combination is what's actually unique.
+app.get('/api/project-scope', requireAuth, async (req, res) => {
+  try {
+    const rows = await readTab('ProjectScope').catch(() => []);
+    res.json({ scope: rows });
+  } catch (e) { sendErr(res, e); }
+});
+
+app.post('/api/project-scope/toggle', requireAuth, requireLeader, async (req, res) => {
+  try {
+    const { zone, project, building, item } = req.body;
+    if (!zone || !project || !building || !item) throw new Error('BAD_REQUEST');
+    let updated;
+    await updateTabSafe('ProjectScope', rows => {
+      const row = rows.find(r => r.zone === zone && r.project === project && r.building === building && r.item === item);
+      if (!row) throw new Error('NOT_FOUND');
+      row.status = row.status === 'done' ? 'not_started' : 'done';
+      updated = row;
+      return rows;
+    });
+    res.json(updated);
+  } catch (e) { sendErr(res, e); }
+});
+
 app.get('/api/backup/export', requireAuth, requireOwner, async (req, res) => {
   try {
-    const tabs = ['Teams', 'Members', 'Tasks', 'Notifications', 'Achievements', 'WorkDays', 'ProjectTargets', 'Messages', 'ChecklistTemplates', 'Comments', 'Holidays', 'Leaves'];
+    const tabs = ['Teams', 'Members', 'Tasks', 'Notifications', 'Achievements', 'WorkDays', 'ProjectTargets', 'Messages', 'ChecklistTemplates', 'Comments', 'Holidays', 'Leaves', 'ProjectScope'];
     const data = {};
     for (const tab of tabs) {
       const rows = await readTab(tab).catch(() => []);
