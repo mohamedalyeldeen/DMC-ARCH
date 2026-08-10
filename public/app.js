@@ -922,7 +922,7 @@
         ${t.description? `<div class="ticket-desc">${escapeHtml(t.description)}</div>`:''}
         <div class="ticket-meta">
           <div class="ticket-assignee">${member? `<div class="avatar" style="width:18px;height:18px;font-size:8px;background:${member.color};">${initials(member.name)}</div><span>${escapeHtml(member.name)}</span>`:'<span style="color:var(--text-dim-on-paper);">Unassigned</span>'}</div>
-          <div class="ticket-due ${overdue?'overdue':''}">${overdue?'⚠ ':''}${colIdx===3 ? (t.completedAt? 'Completed '+fmtDate(t.completedAt) : 'Completed date unknown') : (t.startDate && t.endDate ? fmtDate(t.startDate)+' → '+fmtDate(t.endDate) : 'No dates set')}</div>
+          <div class="ticket-due ${overdue?'overdue':''}">${overdue?'⚠ ':''}${colIdx===3 ? (t.completedAt? 'Completed '+fmtDate(t.completedAt)+completionBadgeHtml(t) : 'Completed date unknown') : (t.startDate && t.endDate ? fmtDate(t.startDate)+' → '+fmtDate(t.endDate) : 'No dates set')}</div>
         </div>
         ${checklistHtml}
         ${commentsHtml}
@@ -1051,6 +1051,16 @@
   }
 
   function nextActionLabel(colIdx){ return (['Start ▸','Submit ▸','Approve ▸'])[colIdx] || 'Next ▸'; }
+
+  // On-time/Late is a purely visual comparison of completedAt vs the task's
+  // planned endDate — it has no connection to the productivity formula
+  // (taskProductivityWeight only ever looks at revision/type/drawings), so
+  // a late delivery is never penalized in anyone's productivity numbers.
+  function completionBadgeHtml(t){
+    if(!t.completedAt || !t.endDate) return '';
+    const onTime = t.completedAt <= t.endDate;
+    return ` <span class="completion-badge ${onTime?'on-time':'late'}">${onTime?'On time':'Late'}</span>`;
+  }
 
   async function moveTask(id, newStatus){
     const t = state.tasks.find(x=>x.id===id);
@@ -2068,16 +2078,31 @@
   function progressFloorColor(status){
     return status==='done' ? '#5C8F55' : 'var(--text-dim-on-ink)';
   }
+  let progressLastSignature = null;
   async function renderProgressView(){
     const el = document.getElementById('progressView');
-    el.innerHTML = '<div class="dash-card"><div class="notif-empty">Loading…</div></div>';
+    const isFirstLoad = progressScopeCache === null;
+    if(isFirstLoad){
+      el.innerHTML = '<div class="dash-card"><div class="notif-empty">Loading…</div></div>';
+    }
+    let freshScope;
     try{
       const data = await api('GET', '/api/project-scope');
-      progressScopeCache = data.scope || [];
+      freshScope = data.scope || [];
     }catch(e){
-      el.innerHTML = `<div class="dash-card"><div class="notif-empty">Could not load scope data: ${escapeHtml(e.message)}</div></div>`;
+      if(isFirstLoad) el.innerHTML = `<div class="dash-card"><div class="notif-empty">Could not load scope data: ${escapeHtml(e.message)}</div></div>`;
       return;
     }
+    // This gets called on every ~8s poll while sitting on this tab (same as
+    // every other tab) — rebuilding the whole DOM every single time was
+    // what made it visibly blink even when nothing had changed. Skip the
+    // rebuild entirely unless the data (or the current selection) actually
+    // differs from what's already on screen.
+    const sig = JSON.stringify(freshScope) + '|' + progressZone + '|' + progressProject;
+    if(!isFirstLoad && sig === progressLastSignature) return;
+    progressLastSignature = sig;
+    progressScopeCache = freshScope;
+
     const zones = Array.from(new Set(progressScopeCache.map(r=>r.zone))).sort();
     if(!progressZone && zones.length) progressZone = zones[0];
     const projects = Array.from(new Set(progressScopeCache.filter(r=>r.zone===progressZone).map(r=>r.project))).sort();

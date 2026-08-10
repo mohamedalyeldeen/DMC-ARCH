@@ -110,6 +110,9 @@ body{background:var(--ink);color:var(--text-on-ink);font-family:'Inter',sans-ser
 .ticket-meta{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;}
 .ticket-assignee{display:flex;align-items:center;gap:6px;font-size:11.5px;color:var(--text-on-paper);}
 .ticket-due{font-family:'IBM Plex Mono',monospace;font-size:10.5px;color:var(--text-dim-on-paper);}
+.completion-badge{display:inline-block;padding:1px 7px;border-radius:9px;font-size:9px;font-weight:600;letter-spacing:.3px;text-transform:uppercase;vertical-align:middle;}
+.completion-badge.on-time{background:rgba(92,143,85,0.18);color:#3f6b3a;}
+.completion-badge.late{background:rgba(189,82,56,0.18);color:var(--rust);}
 .ticket-due.overdue{color:var(--rust);font-weight:600;}
 .lifecycle{display:flex;gap:4px;margin-bottom:10px;}
 .lifecycle span{flex:1;height:4px;border-radius:2px;background:var(--line-on-paper);}
