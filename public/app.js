@@ -336,12 +336,14 @@
     document.getElementById('capacityView').style.display='none';
     document.getElementById('progressView').style.display='none';
     document.getElementById('bulkAssignBtn').style.display='none';
+    document.getElementById('dueTodayBtn').style.display='none';
     if(activeTab==='board'){
       document.getElementById('viewTitle').textContent = isLeaderLike() ? "This Week's Jobs" : 'My Tasks';
       document.getElementById('board').style.display='flex';
       document.getElementById('doneFilterBar').style.display='flex';
       document.getElementById('newTaskBtn').style.display = canCreateTasks() ? 'inline-block' : 'none';
       document.getElementById('bulkAssignBtn').style.display = canCreateTasks() ? 'inline-block' : 'none';
+      updateDueTodayBtn();
       populateDoneMonthFilter();
       renderBoard();
     } else if(activeTab==='gantt'){
@@ -722,6 +724,7 @@
   // on), never by startDate/endDate, so a task spanning a month boundary
   // is never ambiguous about which month it belongs to.
   let doneMonthFilter = 'auto'; // 'auto' = always the real current month (recomputed live, never stale), a specific 'YYYY-MM', or 'all'
+  let dueTodayFilter = false; // when on, narrows the board to open tasks whose end date is today
   function currentMonthStr(){
     const d = new Date();
     return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0');
@@ -763,6 +766,23 @@
     renderBoard();
   });
 
+  // Shows how many open tasks are due today right on the button (updates
+  // every render, independent of whether the filter itself is on), so it's
+  // useful as an at-a-glance count even before anyone clicks it.
+  function updateDueTodayBtn(){
+    const btn = document.getElementById('dueTodayBtn');
+    btn.style.display = 'inline-block';
+    const today = todayStr();
+    const count = state.tasks.filter(t=> t.status!=='done' && t.endDate===today).length;
+    btn.textContent = `📅 Due Today${count>0?` (${count})`:''}`;
+    btn.classList.toggle('primary', dueTodayFilter);
+  }
+  document.getElementById('dueTodayBtn').addEventListener('click', ()=>{
+    dueTodayFilter = !dueTodayFilter;
+    updateDueTodayBtn();
+    renderBoard();
+  });
+
   function visibleTasks(){
     const q = document.getElementById('searchBox').value.trim().toLowerCase();
     let base = state.tasks;
@@ -781,6 +801,10 @@
           .filter(Boolean).join(' ').toLowerCase();
         return haystack.includes(q);
       });
+    }
+    if(dueTodayFilter){
+      const today = todayStr();
+      base = base.filter(t=> t.status!=='done' && t.endDate===today);
     }
     return base;
   }
@@ -801,6 +825,7 @@
       expChk: Array.from(expandedChecklists).sort(),
       expCom: Array.from(expandedComments).sort(),
       doneMonth: doneMonthFilter,
+      dueToday: dueTodayFilter,
       search: document.getElementById('searchBox').value,
       filter
     });
@@ -1897,7 +1922,13 @@
   function memberStats(memberId, pool){
     const tasks = pool.filter(t=>t.assignee===memberId);
     const completed = tasks.filter(t=>t.status==='done');
-    const onTime = completed.filter(t=> !t.due || (t.completedAt && t.completedAt<=t.due));
+    // endDate is always kept current by every scheduling operation (auto-
+    // schedule shifts, leave pushes, reschedule-remaining); the legacy
+    // `due` field is only updated on a direct manual edit, so it silently
+    // drifts stale whenever a task's dates move for any other reason —
+    // that mismatch is exactly what made this disagree with the Board's
+    // on-time badge, which already correctly compares against endDate.
+    const onTime = completed.filter(t=> !t.endDate || (t.completedAt && t.completedAt<=t.endDate));
     return {total:tasks.length, completed:completed.length, onTime:onTime.length, open:tasks.length-completed.length};
   }
 
