@@ -211,6 +211,9 @@
   document.getElementById('logoutBtn').addEventListener('click', ()=>{
     session = null;
     if(pollTimer) clearInterval(pollTimer);
+    if(firstLoadRetryTimer){ clearTimeout(firstLoadRetryTimer); firstLoadRetryTimer = null; }
+    hasEverLoadedState = false;
+    hideConnectionBanner();
     clearUndo();
     capacityLoaded = false;
     capacityData = [];
@@ -306,15 +309,45 @@
     return state.tasks.filter(t=> ids.includes(t.assignee)).length;
   }
 
+  let hasEverLoadedState = false;
+  let firstLoadRetryTimer = null;
+  function showConnectionBanner(message, isFirstLoad){
+    const banner = document.getElementById('connectionBanner');
+    document.getElementById('connectionBannerText').textContent = isFirstLoad
+      ? `Couldn't load your board yet — ${message||'connection issue'}. Retrying…`
+      : `Couldn't refresh just now — ${message||'connection issue'}. Your board may be a little out of date.`;
+    banner.style.display = 'flex';
+  }
+  function hideConnectionBanner(){
+    document.getElementById('connectionBanner').style.display = 'none';
+  }
+  document.getElementById('connectionRetryBtn').addEventListener('click', ()=>{
+    if(firstLoadRetryTimer){ clearTimeout(firstLoadRetryTimer); firstLoadRetryTimer = null; }
+    refreshState();
+  });
+
   async function refreshState(){
     try{
       const data = await api('GET', '/api/state');
       state = data;
+      hasEverLoadedState = true;
+      hideConnectionBanner();
+      if(firstLoadRetryTimer){ clearTimeout(firstLoadRetryTimer); firstLoadRetryTimer = null; }
       renderApp();
       maybeShowCelebration();
     }catch(e){
       if(e.message && e.message.toLowerCase().includes('session')){
         document.getElementById('logoutBtn').click();
+        return;
+      }
+      // This used to fail completely silently for anything that wasn't a
+      // session error — on the very first load after logging in, that
+      // meant a transient API hiccup (e.g. a Sheets quota blip) left the
+      // board looking permanently, silently empty with zero indication
+      // anything had gone wrong, which read as "all my tasks disappeared."
+      showConnectionBanner(e.message, !hasEverLoadedState);
+      if(!hasEverLoadedState && !firstLoadRetryTimer){
+        firstLoadRetryTimer = setTimeout(()=>{ firstLoadRetryTimer = null; refreshState(); }, 3000);
       }
     }
   }
