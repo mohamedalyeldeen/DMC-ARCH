@@ -4,7 +4,7 @@ const cors = require('cors');
 const bcrypt = require('bcryptjs');
 const crypto = require('crypto');
 const path = require('path');
-const { readTab, updateTab, getConfig, setConfig } = require('./lib/sheets');
+const { readTab, readTabsBatch, updateTab, getConfig, setConfig } = require('./lib/sheets');
 const { sign, requireAuth, requireLeader, requireOwner, requireAssigner, isLeader, isTeamWide } = require('./lib/auth');
 const { sendMail, taskAssignedEmail } = require('./lib/mailer');
 const scheduler = require('./lib/scheduler');
@@ -527,7 +527,7 @@ app.get('/api/messages', requireAuth, async (req, res) => {
   try {
     const teamId = req.query.teamId;
     if (!teamId) throw new Error('BAD_REQUEST');
-    const teamsAll = await readTab('Teams');
+    const teamsAll = await getTeamsCached();
     if (!allowedChatTeamIds(req.user, teamsAll).includes(teamId)) throw new Error('FORBIDDEN');
     const all = await readTab('Messages').catch(() => []);
     const messages = all.filter(m => m.teamId === teamId)
@@ -543,7 +543,7 @@ app.post('/api/messages', requireAuth, async (req, res) => {
     const { teamId, text } = req.body;
     if (!teamId || !text || !text.trim()) throw new Error('BAD_REQUEST');
     const trimmed = text.trim().slice(0, 2000);
-    const teamsAll = await readTab('Teams');
+    const teamsAll = await getTeamsCached();
     if (!allowedChatTeamIds(req.user, teamsAll).includes(teamId)) throw new Error('FORBIDDEN');
     let saved;
     await updateTabSafe('Messages', rows => {
@@ -781,12 +781,30 @@ app.get('/api/backup/export', requireAuth, requireOwner, async (req, res) => {
 app.get('/api/state', requireAuth, async (req, res) => {
   try {
     checkOverdueEscalations().catch(() => {}); // fire-and-forget, self-throttled, never blocks the response
-    const [teamsAll, membersRaw, tasksAll] = await Promise.all([getTeamsCached(), readTab('Members'), readTab('Tasks')]);
-    let notificationsAll = [];
+    // Members+Tasks+Notifications+Achievements in ONE Sheets read instead of
+    // up to 4 — this is the hottest endpoint in the app (polled every ~8s by
+    // every open tab), so batching here is what actually keeps it under the
+    // "read requests per minute" quota. Falls back to individual reads (same
+    // as before) if any of those tabs doesn't exist yet in the Sheet, since
+    // batchGet fails the whole call rather than just the missing range.
+    let teamsAll, membersRaw, tasksAll, notificationsAll, achievementsBatch;
     try {
-      notificationsAll = await readTab('Notifications');
+      const [teams, batch] = await Promise.all([
+        getTeamsCached(),
+        readTabsBatch(['Members', 'Tasks', 'Notifications', 'Achievements'])
+      ]);
+      teamsAll = teams;
+      membersRaw = batch.Members;
+      tasksAll = batch.Tasks;
+      notificationsAll = batch.Notifications;
+      achievementsBatch = batch.Achievements;
     } catch (e) {
-      console.error('Notifications tab unavailable (has it been created in the Sheet yet?):', e.message);
+      console.error('Batched /api/state read failed, falling back to individual reads:', e.message);
+      [teamsAll, membersRaw, tasksAll] = await Promise.all([getTeamsCached(), readTab('Members'), readTab('Tasks')]);
+      notificationsAll = await readTab('Notifications').catch(() => {
+        console.error('Notifications tab unavailable (has it been created in the Sheet yet?):', e.message);
+        return [];
+      });
     }
     let tasks, dashboardTasks, teams, visibleMembersRaw;
     if (req.user.role === 'owner' || req.user.isViewer || req.user.isTeamLead || req.user.isSenior) {
@@ -823,7 +841,7 @@ app.get('/api/state', requireAuth, async (req, res) => {
         const memberForStats = member || membersRaw.find(m => m.id === req.user.id) || {};
         const stats = achievements.computeMemberStats(tasksAll.filter(t => t.assignee === req.user.id), memberForStats, today());
         const clickScore = achievements.computeClickScore(stats);
-        const achievementsAll = await readTab('Achievements').catch(() => []);
+        const achievementsAll = achievementsBatch !== undefined ? achievementsBatch : await readTab('Achievements').catch(() => []);
         const mine = achievementsAll.filter(a => a.memberId === req.user.id).sort((a, b) => (b.earnedAt || '').localeCompare(a.earnedAt || ''));
         const pendingCelebration = mine.find(a => a.celebration && !a.seen) || null;
         me = { stats, clickScore, achievements: mine.slice(0, 20), pendingCelebration };
