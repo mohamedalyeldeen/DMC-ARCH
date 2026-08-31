@@ -365,6 +365,7 @@
     document.getElementById('dashboardView').style.display='none';
     document.getElementById('logView').style.display='none';
     document.getElementById('prodDashboardView').style.display='none';
+    document.getElementById('projectProgressView').style.display='none';
     document.getElementById('capacityView').style.display='none';
     document.getElementById('bulkAssignBtn').style.display='none';
     document.getElementById('dueTodayBtn').style.display='none';
@@ -397,6 +398,11 @@
       document.getElementById('prodDashboardView').style.display='block';
       document.getElementById('newTaskBtn').style.display='none';
       renderProductivityDashboard();
+    } else if(activeTab==='projectProgress'){
+      document.getElementById('viewTitle').textContent = 'Project Progress';
+      document.getElementById('projectProgressView').style.display='block';
+      document.getElementById('newTaskBtn').style.display='none';
+      loadAndRenderProjectProgress();
     } else {
       document.getElementById('viewTitle').textContent = 'Capacity';
       document.getElementById('capacityView').style.display='block';
@@ -490,7 +496,7 @@
     catch(e){ alert(e.message); }
   });
 
-  const ALL_TAB_BTNS = ['tabBoardBtn','tabGanttBtn','tabDashBtn','tabLogBtn','tabProdDashBtn','tabCapacityBtn'];
+  const ALL_TAB_BTNS = ['tabBoardBtn','tabGanttBtn','tabDashBtn','tabLogBtn','tabProdDashBtn','tabProjectProgressBtn','tabCapacityBtn'];
   function activateTab(name, btnId){
     activeTab = name;
     ALL_TAB_BTNS.forEach(id=> document.getElementById(id).classList.toggle('active', id===btnId));
@@ -501,6 +507,7 @@
   document.getElementById('tabDashBtn').addEventListener('click', ()=> activateTab('dashboard','tabDashBtn'));
   document.getElementById('tabLogBtn').addEventListener('click', ()=> activateTab('log','tabLogBtn'));
   document.getElementById('tabProdDashBtn').addEventListener('click', ()=> activateTab('proddash','tabProdDashBtn'));
+  document.getElementById('tabProjectProgressBtn').addEventListener('click', ()=> activateTab('projectProgress','tabProjectProgressBtn'));
   document.getElementById('tabCapacityBtn').addEventListener('click', ()=> activateTab('capacity','tabCapacityBtn'));
 
   function renderStats(){
@@ -2405,16 +2412,15 @@
     if(chartTypeSelect) chartTypeSelect.addEventListener('change', ()=>{ prodDashChartType = chartTypeSelect.value; renderProductivityDashboard(); });
   }
 
-  // ---------- LOG TAB (productivity + project progress) ----------
+  // ---------- LOG TAB (productivity) ----------
   // Fetched lazily, only while this tab is open — same pattern as Capacity —
-  // so it adds no load to the regular board polling. WorkDays/ProjectTargets
-  // are owner-entered and small, so re-fetching them on each ~8s poll while
+  // so it adds no load to the regular board polling. WorkDays is
+  // owner-entered and small, so re-fetching it on each ~8s poll while
   // the tab is open is cheap; the completed-tasks log itself reuses
   // state.dashboardTasks (already fetched for the Dashboard tab) instead of
   // hitting the sheet again.
   let logLoaded = false;
   let logWorkdays = [];
-  let logTargets = [];
   let logFilters = { engineer:'', zone:'', project:'', from:'', to:'' };
   let logMonth = (()=>{ const d=new Date(); return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0'); })();
 
@@ -2422,9 +2428,8 @@
     const el = document.getElementById('logView');
     if(!logLoaded) el.innerHTML = '<div class="notif-empty">Loading…</div>';
     try{
-      const [wd, pt] = await Promise.all([ api('GET','/api/workdays'), api('GET','/api/project-targets') ]);
+      const wd = await api('GET','/api/workdays');
       logWorkdays = wd.workdays || [];
-      logTargets = pt.targets || [];
       logLoaded = true;
       renderLogView();
     }catch(e){
@@ -2709,10 +2714,29 @@
     `;
   }
 
+  // ---------- PROJECT PROGRESS TAB (its own tab — split out of Productivity) ----------
+  // Fetched lazily, only while this tab is open — same pattern as Capacity/Log.
+  let ppLoaded = false;
+  let ppTargets = [];
+  let ppViewMode = 'cards'; // 'cards' | 'table' | 'zone'
+
+  async function loadAndRenderProjectProgress(){
+    const el = document.getElementById('projectProgressView');
+    if(!ppLoaded) el.innerHTML = '<div class="notif-empty">Loading…</div>';
+    try{
+      const pt = await api('GET','/api/project-targets');
+      ppTargets = pt.targets || [];
+      ppLoaded = true;
+      renderProjectProgressView();
+    }catch(e){
+      if(!ppLoaded) el.innerHTML = `<div class="notif-empty">${escapeHtml(e.message)}</div>`;
+    }
+  }
+
   function computeProjectProgress(zone, project){
     const inAppCompleted = doneTasksPool().filter(t=>t.zone===zone && t.project===project)
       .reduce((sum,t)=> sum + (parseInt(t.numDrawings,10)||0), 0);
-    const targetRow = logTargets.find(t=>t.zone===zone && t.project===project);
+    const targetRow = ppTargets.find(t=>t.zone===zone && t.project===project);
     const target = targetRow ? (parseInt(targetRow.targetDrawings,10)||0) : 0;
     const starting = targetRow ? (parseInt(targetRow.startingDrawings,10)||0) : 0;
     const completed = inAppCompleted + starting;
@@ -2720,43 +2744,133 @@
     return {inAppCompleted, starting, completed, target, pct};
   }
 
-  function renderProjectProgressSection(){
+  // Flat list of every zone/project the roster currently offers, with its
+  // progress numbers attached — the three view modes below all render off
+  // this same list, so hiding untouched projects for non-owners only needs
+  // to be decided in one place.
+  function projectProgressRows(){
     const zoneProjects = (state.taxonomy && state.taxonomy.zoneProjects) || {};
-    const cards = [];
+    const rows = [];
     Object.keys(zoneProjects).forEach(zone=>{
       zoneProjects[zone].forEach(project=>{
         const p = computeProjectProgress(zone, project);
         if(!isOwner() && p.target===0 && p.completed===0) return; // hide untouched projects for non-owners
-        const targetField = isOwner()
-          ? `<input type="number" min="0" class="target-input" data-zone="${escapeHtml(zone)}" data-project="${escapeHtml(project)}" value="${p.target}">`
-          : `<span>${p.target || '—'}</span>`;
-        const startingField = isOwner()
-          ? `<input type="number" min="0" class="starting-input" data-zone="${escapeHtml(zone)}" data-project="${escapeHtml(project)}" value="${p.starting}">`
-          : `<span>${p.starting || 0}</span>`;
-        cards.push(`
-          <div class="prog-card">
-            <div class="prog-zone">${escapeHtml(zone)}</div>
-            <div class="prog-name">${escapeHtml(project)}</div>
-            <div class="bar-track" style="width:100%;"><div class="bar-fill" style="width:${p.pct}%;"></div></div>
-            <div class="prog-stats" style="margin-top:10px;">
-              <span>${p.completed} done${p.starting>0?` (${p.inAppCompleted} in-app + ${p.starting} before tracking)`:''}</span>
-              <span>Target: ${targetField}</span>
-              <span>${p.pct}%</span>
-            </div>
-            <div class="prog-stats" style="margin-top:6px;">
-              <span>Already delivered before tracking: ${startingField}</span>
-            </div>
-          </div>
-        `);
+        rows.push({zone, project, ...p});
       });
     });
+    return rows;
+  }
+
+  function progressTargetField(r){
+    return isOwner()
+      ? `<input type="number" min="0" class="target-input" data-zone="${escapeHtml(r.zone)}" data-project="${escapeHtml(r.project)}" value="${r.target}">`
+      : `<span>${r.target || '—'}</span>`;
+  }
+  function progressStartingField(r){
+    return isOwner()
+      ? `<input type="number" min="0" class="starting-input" data-zone="${escapeHtml(r.zone)}" data-project="${escapeHtml(r.project)}" value="${r.starting}">`
+      : `<span>${r.starting || 0}</span>`;
+  }
+
+  function renderProgressCards(rows){
+    const cards = rows.map(r=>`
+      <div class="prog-card">
+        <div class="prog-zone">${escapeHtml(r.zone)}</div>
+        <div class="prog-name">${escapeHtml(r.project)}</div>
+        <div class="bar-track" style="width:100%;"><div class="bar-fill" style="width:${r.pct}%;"></div></div>
+        <div class="prog-stats" style="margin-top:10px;">
+          <span>${r.completed} done${r.starting>0?` (${r.inAppCompleted} in-app + ${r.starting} before tracking)`:''}</span>
+          <span>Target: ${progressTargetField(r)}</span>
+          <span>${r.pct}%</span>
+        </div>
+        <div class="prog-stats" style="margin-top:6px;">
+          <span>Already delivered before tracking: ${progressStartingField(r)}</span>
+        </div>
+      </div>
+    `).join('');
+    return `<div class="prog-grid">${cards || '<div class="notif-empty">No projects to show yet.</div>'}</div>`;
+  }
+
+  function renderProgressTable(rows){
+    if(!rows.length) return '<div class="notif-empty">No projects to show yet.</div>';
+    const tableRows = rows.map(r=>`
+      <tr>
+        <td>${escapeHtml(r.zone)}</td>
+        <td>${escapeHtml(r.project)}</td>
+        <td>${r.completed}${r.starting>0?` (${r.inAppCompleted} in-app + ${r.starting} before tracking)`:''}</td>
+        <td>${progressTargetField(r)}</td>
+        <td>${progressStartingField(r)}</td>
+        <td style="display:flex;align-items:center;gap:8px;"><div class="bar-track"><div class="bar-fill" style="width:${r.pct}%;"></div></div>${r.pct}%</td>
+      </tr>
+    `).join('');
     return `
-      <div class="dash-card">
-        <h3>Project Progress</h3>
-        <div style="font-size:11px;color:var(--text-dim-on-ink);margin-bottom:14px;">For projects that were already underway before this app, set "Already delivered before tracking" once so the % reflects reality — it's added on top of whatever gets completed in-app.</div>
-        <div class="prog-grid">${cards.join('') || '<div class="notif-empty">No projects to show yet.</div>'}</div>
+      <div style="overflow-x:auto;">
+        <table class="dash-table">
+          <thead><tr><th>Zone</th><th>Project</th><th>Done</th><th>Target</th><th>Before tracking</th><th>Progress</th></tr></thead>
+          <tbody>${tableRows}</tbody>
+        </table>
       </div>
     `;
+  }
+
+  function renderProgressByZone(rows){
+    if(!rows.length) return '<div class="notif-empty">No projects to show yet.</div>';
+    const zones = Array.from(new Set(rows.map(r=>r.zone)));
+    return zones.map(zone=>`
+      <div style="margin-bottom:18px;">
+        <h4 style="margin:0 0 10px;font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:.5px;text-transform:uppercase;color:var(--text-dim-on-ink);">${escapeHtml(zone)}</h4>
+        ${renderProgressCards(rows.filter(r=>r.zone===zone))}
+      </div>
+    `).join('');
+  }
+
+  function renderProjectProgressView(){
+    const el = document.getElementById('projectProgressView');
+    const rows = projectProgressRows();
+    const body = ppViewMode==='table' ? renderProgressTable(rows)
+      : ppViewMode==='zone' ? renderProgressByZone(rows)
+      : renderProgressCards(rows);
+    el.innerHTML = `
+      <div class="dash-card">
+        <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;">
+          <h3 style="margin:0;">Project Progress</h3>
+          <div class="gantt-toggle-group">
+            <button class="gantt-toggle-btn ${ppViewMode==='cards'?'active':''}" id="ppModeCardsBtn">Cards</button>
+            <button class="gantt-toggle-btn ${ppViewMode==='table'?'active':''}" id="ppModeTableBtn">Table</button>
+            <button class="gantt-toggle-btn ${ppViewMode==='zone'?'active':''}" id="ppModeZoneBtn">By zone</button>
+          </div>
+        </div>
+        <div style="font-size:11px;color:var(--text-dim-on-ink);margin:10px 0 14px;">For projects that were already underway before this app, set "Already delivered before tracking" once so the % reflects reality — it's added on top of whatever gets completed in-app.</div>
+        ${body}
+      </div>
+    `;
+    wireProjectProgressInteractions();
+  }
+
+  function wireProjectProgressInteractions(){
+    document.getElementById('ppModeCardsBtn').addEventListener('click', ()=>{ ppViewMode='cards'; renderProjectProgressView(); });
+    document.getElementById('ppModeTableBtn').addEventListener('click', ()=>{ ppViewMode='table'; renderProjectProgressView(); });
+    document.getElementById('ppModeZoneBtn').addEventListener('click', ()=>{ ppViewMode='zone'; renderProjectProgressView(); });
+
+    async function saveProjectTarget(zoneVal, projectVal){
+      const targetInp = document.querySelector(`.target-input[data-zone="${CSS.escape(zoneVal)}"][data-project="${CSS.escape(projectVal)}"]`);
+      const startingInp = document.querySelector(`.starting-input[data-zone="${CSS.escape(zoneVal)}"][data-project="${CSS.escape(projectVal)}"]`);
+      const targetDrawings = targetInp ? (parseInt(targetInp.value,10)||0) : 0;
+      const startingDrawings = startingInp ? (parseInt(startingInp.value,10)||0) : 0;
+      try{
+        await api('POST','/api/project-targets',{zone: zoneVal, project: projectVal, targetDrawings, startingDrawings});
+        const existing = ppTargets.find(t=>t.zone===zoneVal && t.project===projectVal);
+        if(existing){ existing.targetDrawings = targetDrawings; existing.startingDrawings = startingDrawings; }
+        else ppTargets.push({zone: zoneVal, project: projectVal, targetDrawings, startingDrawings});
+        renderProjectProgressView();
+      }catch(e){ alert(e.message); }
+    }
+    document.querySelectorAll('.target-input').forEach(inp=>{
+      inp.addEventListener('change', ()=> saveProjectTarget(inp.dataset.zone, inp.dataset.project));
+    });
+    document.querySelectorAll('.starting-input').forEach(inp=>{
+      inp.addEventListener('change', ()=> saveProjectTarget(inp.dataset.zone, inp.dataset.project));
+    });
   }
 
   function wireLogInteractions(){
@@ -2789,31 +2903,11 @@
         }catch(e){ alert(e.message); }
       });
     });
-
-    async function saveProjectTarget(zoneVal, projectVal){
-      const targetInp = document.querySelector(`.target-input[data-zone="${CSS.escape(zoneVal)}"][data-project="${CSS.escape(projectVal)}"]`);
-      const startingInp = document.querySelector(`.starting-input[data-zone="${CSS.escape(zoneVal)}"][data-project="${CSS.escape(projectVal)}"]`);
-      const targetDrawings = targetInp ? (parseInt(targetInp.value,10)||0) : 0;
-      const startingDrawings = startingInp ? (parseInt(startingInp.value,10)||0) : 0;
-      try{
-        await api('POST','/api/project-targets',{zone: zoneVal, project: projectVal, targetDrawings, startingDrawings});
-        const existing = logTargets.find(t=>t.zone===zoneVal && t.project===projectVal);
-        if(existing){ existing.targetDrawings = targetDrawings; existing.startingDrawings = startingDrawings; }
-        else logTargets.push({zone: zoneVal, project: projectVal, targetDrawings, startingDrawings});
-        renderLogView();
-      }catch(e){ alert(e.message); }
-    }
-    document.querySelectorAll('.target-input').forEach(inp=>{
-      inp.addEventListener('change', ()=> saveProjectTarget(inp.dataset.zone, inp.dataset.project));
-    });
-    document.querySelectorAll('.starting-input').forEach(inp=>{
-      inp.addEventListener('change', ()=> saveProjectTarget(inp.dataset.zone, inp.dataset.project));
-    });
   }
 
   function renderLogView(){
     const el = document.getElementById('logView');
-    el.innerHTML = renderLogTable() + renderProductivitySection() + renderProjectProgressSection();
+    el.innerHTML = renderLogTable() + renderProductivitySection();
     wireLogInteractions();
   }
 
