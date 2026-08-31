@@ -10,6 +10,7 @@
   let state = {teams:[], members:[], tasks:[], dashboardTasks:[]};
   let filter = null;    // null | {type:'member'|'team', id}
   let activeTab = 'board';
+  let capacityLoaded = false;
   let capacityData = [];
   let capacitySortMode = 'availability'; // 'availability' | 'capacity'
   let evaFilters = { engineer:'', team:'', from:'', to:'' };
