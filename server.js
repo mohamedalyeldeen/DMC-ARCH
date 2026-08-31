@@ -40,7 +40,7 @@ const COLUMN_ORDER = ['todo', 'inprogress', 'submitted', 'done'];
 // task-type dropdown. Validated server-side too (not just in the UI) so a
 // bad request can't store an inconsistent zone/project pairing.
 const ZONE_PROJECTS = {
-  'October': ['Club District', 'Lagoon', 'Mountain Park', 'Commercial Building', 'COP'],
+  'October': ['Club District', 'Lagoon', 'Mountain Park', 'Commercial Building', 'COP', 'Kingsway'],
   'New Cairo': ['Old Lagoon', 'New Lagoon', 'Club District', 'Body', 'Heart Work', 'Aliva', 'MV1 Extension'],
   'North Coast': ['Evia', 'Skala', 'Crete', 'Rhodes', 'Levels']
 };
