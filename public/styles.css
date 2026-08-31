@@ -287,6 +287,11 @@ body{background:var(--ink);color:var(--text-on-ink);font-family:'Inter',sans-ser
 .notif-row .notif-dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--amber);margin-right:6px;}
 .notif-time{font-size:10px;color:var(--text-dim-on-paper);font-family:'IBM Plex Mono',monospace;margin-top:4px;}
 .notif-empty{font-size:12.5px;color:var(--text-dim-on-paper);padding:20px 4px;text-align:center;}
+/* .notif-empty is also reused inside dark dash-wrap panels (Capacity, Log,
+   Productivity Dashboard) — its default color is tuned for the light modal/
+   chat background it was designed for, which reads as invisible text on
+   those dark backgrounds. This keeps the light-background usage untouched. */
+.dash-wrap .notif-empty{color:var(--text-dim-on-ink);}
 
 ::-webkit-scrollbar{width:8px;height:8px;}
 ::-webkit-scrollbar-track{background:transparent;}

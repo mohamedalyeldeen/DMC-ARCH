@@ -1647,8 +1647,9 @@
     const left = daysBetweenIso(range.start, t.startDate) * dayWidth;
     const width = Math.max(dayWidth - 4, (daysBetweenIso(t.startDate, t.endDate)+1) * dayWidth - 4);
     const overdue = t.endDate < todayStr() && t.status!=='done';
-    const label = `${t.title} (${fmtDate(t.startDate)}–${fmtDate(t.endDate)})`;
-    return `<div class="gantt-bar status-${t.status} ${overdue?'overdue':''}" draggable="true" data-task-id="${t.id}" data-start="${t.startDate}" data-end="${t.endDate}" style="left:${left}px;width:${width}px;" title="${escapeHtml(label)}">${escapeHtml(t.title)}</div>`;
+    const projectLabel = t.project || t.title;
+    const label = `${projectLabel} (${fmtDate(t.startDate)}–${fmtDate(t.endDate)})`;
+    return `<div class="gantt-bar status-${t.status} ${overdue?'overdue':''}" draggable="true" data-task-id="${t.id}" data-start="${t.startDate}" data-end="${t.endDate}" style="left:${left}px;width:${width}px;" title="${escapeHtml(label)}">${escapeHtml(projectLabel)}</div>`;
   }
 
   function renderGantt(){
