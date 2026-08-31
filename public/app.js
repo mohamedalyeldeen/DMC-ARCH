@@ -358,7 +358,6 @@
     renderNotifBadge();
     renderSidebar();
     document.getElementById('tabCapacityBtn').style.display = isLeaderLike() ? 'inline-block' : 'none';
-    document.getElementById('tabProgressBtn').style.display = isLeaderLike() ? 'inline-block' : 'none';
     document.getElementById('myStatsBtn').style.display = (isOwner() || isViewer()) ? 'none' : 'inline-block';
     document.getElementById('board').style.display='none';
     document.getElementById('doneFilterBar').style.display='none';
@@ -367,7 +366,6 @@
     document.getElementById('logView').style.display='none';
     document.getElementById('prodDashboardView').style.display='none';
     document.getElementById('capacityView').style.display='none';
-    document.getElementById('progressView').style.display='none';
     document.getElementById('bulkAssignBtn').style.display='none';
     document.getElementById('dueTodayBtn').style.display='none';
     if(activeTab==='board'){
@@ -399,11 +397,6 @@
       document.getElementById('prodDashboardView').style.display='block';
       document.getElementById('newTaskBtn').style.display='none';
       renderProductivityDashboard();
-    } else if(activeTab==='progress'){
-      document.getElementById('viewTitle').textContent = 'Progress';
-      document.getElementById('progressView').style.display='block';
-      document.getElementById('newTaskBtn').style.display='none';
-      renderProgressView();
     } else {
       document.getElementById('viewTitle').textContent = 'Capacity';
       document.getElementById('capacityView').style.display='block';
@@ -497,7 +490,7 @@
     catch(e){ alert(e.message); }
   });
 
-  const ALL_TAB_BTNS = ['tabBoardBtn','tabGanttBtn','tabDashBtn','tabLogBtn','tabProdDashBtn','tabCapacityBtn','tabProgressBtn'];
+  const ALL_TAB_BTNS = ['tabBoardBtn','tabGanttBtn','tabDashBtn','tabLogBtn','tabProdDashBtn','tabCapacityBtn'];
   function activateTab(name, btnId){
     activeTab = name;
     ALL_TAB_BTNS.forEach(id=> document.getElementById(id).classList.toggle('active', id===btnId));
@@ -509,7 +502,6 @@
   document.getElementById('tabLogBtn').addEventListener('click', ()=> activateTab('log','tabLogBtn'));
   document.getElementById('tabProdDashBtn').addEventListener('click', ()=> activateTab('proddash','tabProdDashBtn'));
   document.getElementById('tabCapacityBtn').addEventListener('click', ()=> activateTab('capacity','tabCapacityBtn'));
-  document.getElementById('tabProgressBtn').addEventListener('click', ()=> activateTab('progress','tabProgressBtn'));
 
   function renderStats(){
     const visible = isLeaderLike() ? state.tasks : state.tasks;
@@ -2128,110 +2120,6 @@
       wireEstimatedVsActualFilters();
       document.getElementById('openDailyReportBtn').addEventListener('click', openDailyReportModal);
     }
-  }
-
-  // ---------- PROGRESS VIEW (2D building scope-of-work towers) ----------
-  // Deliberately independent of the Tasks board — most in-flight projects
-  // started long before this app did, so a board-linked version would show
-  // empty/wrong towers for exactly the projects this is meant to track.
-  // Owner enters scope items directly in the ProjectScope sheet tab; anyone
-  // who can see this tab can click a floor to flip it done <-> not started.
-  let progressZone = '';
-  let progressProject = '';
-  let progressScopeCache = null; // loaded once per visit to the tab, refreshed on toggle
-  function progressFloorColor(status){
-    return status==='done' ? '#5C8F55' : 'var(--text-dim-on-ink)';
-  }
-  let progressLastSignature = null;
-  async function renderProgressView(){
-    const el = document.getElementById('progressView');
-    const isFirstLoad = progressScopeCache === null;
-    if(isFirstLoad){
-      el.innerHTML = '<div class="dash-card"><div class="notif-empty">Loading…</div></div>';
-    }
-    let freshScope;
-    try{
-      const data = await api('GET', '/api/project-scope');
-      freshScope = data.scope || [];
-    }catch(e){
-      if(isFirstLoad) el.innerHTML = `<div class="dash-card"><div class="notif-empty">Could not load scope data: ${escapeHtml(e.message)}</div></div>`;
-      return;
-    }
-    // This gets called on every ~8s poll while sitting on this tab (same as
-    // every other tab) — rebuilding the whole DOM every single time was
-    // what made it visibly blink even when nothing had changed. Skip the
-    // rebuild entirely unless the data (or the current selection) actually
-    // differs from what's already on screen.
-    const sig = JSON.stringify(freshScope) + '|' + progressZone + '|' + progressProject;
-    if(!isFirstLoad && sig === progressLastSignature) return;
-    progressLastSignature = sig;
-    progressScopeCache = freshScope;
-
-    const zones = Array.from(new Set(progressScopeCache.map(r=>r.zone))).sort();
-    if(!progressZone && zones.length) progressZone = zones[0];
-    const projects = Array.from(new Set(progressScopeCache.filter(r=>r.zone===progressZone).map(r=>r.project))).sort();
-    if(!projects.includes(progressProject)) progressProject = projects[0] || '';
-
-    el.innerHTML = `
-      <div class="dash-card">
-        <div style="font-size:11px;color:var(--text-dim-on-ink);margin-bottom:14px;">Tracked manually — this is independent of the task board, so it works for projects that were already underway before this app. ${isLeader()?'Click a floor to mark it done.':''}</div>
-        ${zones.length===0 ? '<div class="notif-empty">No scope data yet — add rows to the ProjectScope sheet tab to get started.</div>' : `
-          <div class="progress-filters">
-            <select id="progressZoneSel">${zones.map(z=>`<option value="${escapeHtml(z)}" ${z===progressZone?'selected':''}>${escapeHtml(z)}</option>`).join('')}</select>
-            <select id="progressProjectSel">${projects.map(p=>`<option value="${escapeHtml(p)}" ${p===progressProject?'selected':''}>${escapeHtml(p)}</option>`).join('')}</select>
-          </div>
-          <div class="progress-towers" id="progressTowersWrap"></div>
-        `}
-      </div>
-    `;
-    if(zones.length===0) return;
-    document.getElementById('progressZoneSel').addEventListener('change', (e)=>{
-      progressZone = e.target.value; progressProject = '';
-      renderProgressView();
-    });
-    document.getElementById('progressProjectSel').addEventListener('change', (e)=>{
-      progressProject = e.target.value;
-      renderProgressTowers();
-    });
-    renderProgressTowers();
-  }
-  function renderProgressTowers(){
-    const wrap = document.getElementById('progressTowersWrap');
-    if(!wrap || !progressScopeCache) return;
-    const rows = progressScopeCache.filter(r=>r.zone===progressZone && r.project===progressProject);
-    const buildings = Array.from(new Set(rows.map(r=>r.building).filter(Boolean))).sort();
-    if(buildings.length===0){
-      wrap.innerHTML = '<div class="notif-empty">No buildings for this project yet.</div>';
-      return;
-    }
-    const canToggle = isLeader();
-    wrap.innerHTML = buildings.map(b=>{
-      const items = rows.filter(r=>r.building===b).sort((a,c)=> (a.order||0)-(c.order||0));
-      const doneCount = items.filter(r=>r.status==='done').length;
-      const floors = items.map(r=>
-        `<div class="progress-floor" style="background:${progressFloorColor(r.status)};${canToggle?'':'cursor:default;'}" data-item="${escapeHtml(r.item)}" title="${escapeHtml(r.item)} — ${r.status==='done'?'Done':'Not started'}">${escapeHtml(r.item)}</div>`
-      ).join('');
-      return `
-        <div class="progress-tower-col">
-          <div class="progress-tower-label">${escapeHtml(b)}</div>
-          <div class="progress-tower-sub">${doneCount}/${items.length} done</div>
-          ${floors ? `<div class="progress-tower">${floors}</div>` : '<div class="progress-empty-tower">No items</div>'}
-        </div>
-      `;
-    }).join('');
-    if(!canToggle) return;
-    wrap.querySelectorAll('.progress-floor[data-item]').forEach(floorEl=>{
-      floorEl.addEventListener('click', async ()=>{
-        const towerCol = floorEl.closest('.progress-tower-col');
-        const building = towerCol.querySelector('.progress-tower-label').textContent;
-        try{
-          const updated = await api('POST', '/api/project-scope/toggle', {zone: progressZone, project: progressProject, building, item: floorEl.dataset.item});
-          const row = progressScopeCache.find(r=>r.zone===progressZone && r.project===progressProject && r.building===building && r.item===floorEl.dataset.item);
-          if(row) row.status = updated.status;
-          renderProgressTowers();
-        }catch(e){ alert(e.message); }
-      });
-    });
   }
 
   async function loadAndRenderCapacity(){

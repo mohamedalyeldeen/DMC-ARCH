@@ -244,20 +244,6 @@ body{background:var(--ink);color:var(--text-on-ink);font-family:'Inter',sans-ser
 .cal-day.empty{visibility:hidden;cursor:default;}
 .cal-popup-legend{margin-top:8px;padding-top:8px;border-top:1px solid var(--line-on-paper);font-size:10px;color:var(--text-dim-on-paper);line-height:1.5;}
 
-/* ── Progress towers (2D building scope-of-work view) ── */
-.progress-filters{display:flex;gap:12px;margin-bottom:18px;flex-wrap:wrap;}
-.progress-filters select{padding:7px 10px;border-radius:4px;border:1px solid var(--line-on-ink, #333);background:var(--paper);color:var(--ink);font-size:12.5px;font-family:inherit;min-width:160px;}
-.progress-towers{display:flex;gap:26px;flex-wrap:wrap;align-items:flex-end;}
-.progress-tower-col{display:flex;flex-direction:column;align-items:center;min-width:150px;}
-.progress-tower-label{font-size:12px;font-weight:600;color:var(--text-on-ink);margin-bottom:8px;text-align:center;}
-.progress-tower-sub{font-size:10.5px;color:var(--text-dim-on-ink);margin-bottom:10px;font-family:'IBM Plex Mono',monospace;}
-.progress-tower{display:flex;flex-direction:column-reverse;border:2px solid var(--ink-2, #1c2430);border-radius:4px 4px 0 0;overflow:hidden;width:150px;box-shadow:0 4px 14px rgba(0,0,0,.25);}
-.progress-floor{height:34px;display:flex;align-items:center;justify-content:center;font-size:10px;color:#fff;font-family:'IBM Plex Mono',monospace;border-top:1px solid rgba(0,0,0,.15);cursor:pointer;text-align:center;padding:0 6px;line-height:1.2;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;transition:filter .15s;}
-.progress-floor:hover{filter:brightness(1.15);}
-.progress-floor.overdue{animation:progressPulse 1.6s ease-in-out infinite;}
-@keyframes progressPulse{0%,100%{opacity:1;}50%{opacity:.55;}}
-.progress-empty-tower{height:34px;display:flex;align-items:center;justify-content:center;color:var(--text-dim-on-ink);font-size:10.5px;border:1px dashed var(--line-on-ink, #333);border-radius:4px;width:150px;}
-
 /* ── Ticket card: comments ── */
 .ticket-comments-toggle{font-size:10.5px;color:var(--text-dim-on-paper);cursor:pointer;margin-top:6px;user-select:none;}
 .ticket-comments-list{margin-top:6px;padding-top:6px;border-top:1px dashed var(--line-on-paper);display:flex;flex-direction:column;gap:8px;max-height:160px;overflow-y:auto;}
