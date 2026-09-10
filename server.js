@@ -627,14 +627,22 @@ function invalidateChatReadsCache() { chatReadsReader.invalidate(); }
 // ~4s chat poll, so an unconditional call here would turn a passive "is
 // there anything new" check into a write storm.
 async function upsertChatRead(userId, teamId) {
-  await updateTab('ChatReads', rows => {
-    const now = new Date().toISOString();
-    const row = rows.find(r => r.userId === userId && r.teamId === teamId);
-    if (row) row.lastReadAt = now;
-    else rows.push({ id: genId('cr'), userId, teamId, lastReadAt: now });
-    return rows;
-  });
-  invalidateChatReadsCache();
+  try {
+    await updateTab('ChatReads', rows => {
+      const now = new Date().toISOString();
+      const row = rows.find(r => r.userId === userId && r.teamId === teamId);
+      if (row) row.lastReadAt = now;
+      else rows.push({ id: genId('cr'), userId, teamId, lastReadAt: now });
+      return rows;
+    });
+    invalidateChatReadsCache();
+  } catch (e) {
+    // Best-effort, like addNotification above — a missing ChatReads tab (not
+    // created yet in an existing deployment's Sheet) should never break
+    // actually reading/sending chat messages, just leave the unread badge
+    // inaccurate until the tab is added.
+    console.error('upsertChatRead failed (has the ChatReads tab been created in the Sheet yet?):', e.message);
+  }
 }
 
 // ---------- TASK COMMENTS ----------
