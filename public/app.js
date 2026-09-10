@@ -358,6 +358,7 @@
   function renderApp(){
     renderRoleBadge();
     renderNotifBadge();
+    renderChatBadge();
     renderSidebar();
     document.getElementById('tabCapacityBtn').style.display = isLeaderLike() ? 'inline-block' : 'none';
     document.getElementById('myStatsBtn').style.display = (isOwner() || isViewer()) ? 'none' : 'inline-block';
@@ -438,6 +439,20 @@
   function renderNotifBadge(){
     const count = state.unreadCount || 0;
     const badge = document.getElementById('notifBadge');
+    if(count > 0){
+      badge.textContent = count > 99 ? '99+' : String(count);
+      badge.style.display = 'inline-block';
+    } else {
+      badge.style.display = 'none';
+    }
+  }
+
+  // Chat unread count comes from the server (see chatUnreadTotal in
+  // GET /api/state) — it's already scoped to channels this user can see and
+  // already excludes their own messages, so this just renders the number.
+  function renderChatBadge(){
+    const count = state.chatUnreadTotal || 0;
+    const badge = document.getElementById('chatUnreadBadge');
     if(count > 0){
       badge.textContent = count > 99 ? '99+' : String(count);
       badge.style.display = 'inline-block';

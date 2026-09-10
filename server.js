@@ -529,10 +529,23 @@ app.get('/api/messages', requireAuth, async (req, res) => {
     if (!teamId) throw new Error('BAD_REQUEST');
     const teamsAll = await getTeamsCached();
     if (!allowedChatTeamIds(req.user, teamsAll).includes(teamId)) throw new Error('FORBIDDEN');
-    const all = await readTab('Messages').catch(() => []);
+    const all = await getMessagesCached();
     const messages = all.filter(m => m.teamId === teamId)
       .sort((a, b) => (a.createdAt || '').localeCompare(b.createdAt || ''))
       .slice(-200); // cap history so the channel doesn't grow unbounded per poll
+    // Opening/polling this channel means the user is actively looking at
+    // it — catch their read bookmark up, but only when there's genuinely
+    // something newer than it, so a caught-up chat panel sitting open
+    // doesn't write to the sheet on every ~4s poll.
+    const latest = messages[messages.length - 1];
+    if (latest) {
+      const myId = req.user.id || 'owner';
+      const reads = await getChatReadsCached();
+      const existing = reads.find(r => r.userId === myId && r.teamId === teamId);
+      if (!existing || existing.lastReadAt < latest.createdAt) {
+        await upsertChatRead(myId, teamId);
+      }
+    }
     res.json({ messages, teams: teamsAll });
   } catch (e) { sendErr(res, e); }
 });
@@ -554,6 +567,8 @@ app.post('/api/messages', requireAuth, async (req, res) => {
       rows.push(saved);
       return rows;
     });
+    invalidateMessagesCache();
+    await upsertChatRead(req.user.id || 'owner', teamId); // sending it means you've obviously seen the channel up to now
     res.json(saved);
   } catch (e) { sendErr(res, e); }
 });
@@ -590,6 +605,37 @@ function makeCachedReader(loader, ttlMs) {
 const teamsReader = makeCachedReader(() => readTab('Teams'), 30000);
 async function getTeamsCached() { return teamsReader.get(); }
 function invalidateTeamsCache() { teamsReader.invalidate(); }
+
+// Chat messages — read on every ~4s chat poll while a panel is open AND now
+// also consulted by every /api/state call (every open tab, every ~8s) for
+// the unread-badge count. A short cache keeps both cheap no matter how many
+// people have chat open or how many tabs are just sitting on the board.
+const messagesReader = makeCachedReader(() => readTab('Messages').catch(() => []), 15000);
+async function getMessagesCached() { return messagesReader.get(); }
+function invalidateMessagesCache() { messagesReader.invalidate(); }
+
+// Per-user "last read" bookmarks for chat, one row per (userId, teamId).
+// Small and rarely written (see upsertChatRead below), but still cached
+// since /api/state reads it on every poll.
+const chatReadsReader = makeCachedReader(() => readTab('ChatReads').catch(() => []), 15000);
+async function getChatReadsCached() { return chatReadsReader.get(); }
+function invalidateChatReadsCache() { chatReadsReader.invalidate(); }
+
+// Marks (userId, teamId) as read as of right now. Callers should only call
+// this when there's actually something newer than the existing bookmark —
+// this does a real Sheets write, and GET /api/messages calls it on every
+// ~4s chat poll, so an unconditional call here would turn a passive "is
+// there anything new" check into a write storm.
+async function upsertChatRead(userId, teamId) {
+  await updateTab('ChatReads', rows => {
+    const now = new Date().toISOString();
+    const row = rows.find(r => r.userId === userId && r.teamId === teamId);
+    if (row) row.lastReadAt = now;
+    else rows.push({ id: genId('cr'), userId, teamId, lastReadAt: now });
+    return rows;
+  });
+  invalidateChatReadsCache();
+}
 
 // ---------- TASK COMMENTS ----------
 // Per-task discussion — separate from the team group chat. Visibility
@@ -779,7 +825,7 @@ app.get('/api/leaves', requireAuth, async (req, res) => {
 
 app.get('/api/backup/export', requireAuth, requireOwner, async (req, res) => {
   try {
-    const tabs = ['Teams', 'Members', 'Tasks', 'Notifications', 'Achievements', 'WorkDays', 'ProjectTargets', 'Messages', 'ChecklistTemplates', 'Comments', 'Holidays', 'Leaves', 'ProjectScope'];
+    const tabs = ['Teams', 'Members', 'Tasks', 'Notifications', 'Achievements', 'WorkDays', 'ProjectTargets', 'Messages', 'ChatReads', 'ChecklistTemplates', 'Comments', 'Holidays', 'Leaves', 'ProjectScope'];
     const data = {};
     for (const tab of tabs) {
       const rows = await readTab(tab).catch(() => []);
@@ -862,8 +908,23 @@ app.get('/api/state', requireAuth, async (req, res) => {
       }
     }
 
+    // Chat unread badge — how many messages across every channel this user
+    // can see are newer than their own last-read bookmark for that channel
+    // (see ChatReads in lib/sheets.js). Both reads here are cached, so this
+    // costs nothing extra on top of the existing per-poll Sheets traffic.
+    const chatTeamIds = allowedChatTeamIds(req.user, teamsAll);
+    let chatUnreadTotal = 0;
+    if (chatTeamIds.length) {
+      const myChatId = req.user.id || 'owner';
+      const [messagesAll, chatReadsAll] = await Promise.all([getMessagesCached(), getChatReadsCached()]);
+      chatTeamIds.forEach(tid => {
+        const lastReadAt = (chatReadsAll.find(r => r.userId === myChatId && r.teamId === tid) || {}).lastReadAt || '';
+        chatUnreadTotal += messagesAll.filter(m => m.teamId === tid && m.senderId !== myChatId && m.createdAt > lastReadAt).length;
+      });
+    }
+
     const checklistTemplates = await getChecklistTemplates().catch(() => ({}));
-    res.json({ teams, members, tasks, dashboardTasks, notifications, unreadCount, you: req.user, me, taxonomy: { zoneProjects: ZONE_PROJECTS, taskTypes: TASK_TYPES, revisionNumbers: REVISION_NUMBERS, checklistTemplates, holidays: holidaysReader.peek() || [] } });
+    res.json({ teams, members, tasks, dashboardTasks, notifications, unreadCount, chatUnreadTotal, you: req.user, me, taxonomy: { zoneProjects: ZONE_PROJECTS, taskTypes: TASK_TYPES, revisionNumbers: REVISION_NUMBERS, checklistTemplates, holidays: holidaysReader.peek() || [] } });
   } catch (e) { sendErr(res, e); }
 });
 
