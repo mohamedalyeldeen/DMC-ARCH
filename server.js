@@ -677,6 +677,44 @@ async function checkOverdueEscalations() {
   }
 }
 
+// Same self-throttling, piggyback-on-polling approach as the overdue check
+// above, but keyed by the calendar day rather than a rolling window — this
+// is meant as a one-time same-day nudge, not a repeating alarm, so it only
+// ever sends once per task per day (checked against today's existing
+// Notifications rows) no matter how many times this function itself runs.
+// Notifies the assignee and, separately, whoever originally created the
+// task (see createdById in lib/sheets.js) — unless that's the owner, who
+// doesn't participate in the notification system at all (see GET
+// /api/state, which always returns an empty list for them), or is the same
+// person as the assignee.
+let lastDueTodayCheckAtMs = 0;
+async function checkDueTodayReminders() {
+  try {
+    if (Date.now() - lastDueTodayCheckAtMs < 60 * 60 * 1000) return;
+    lastDueTodayCheckAtMs = Date.now();
+    const todayStr = today();
+    const [tasksAll, notificationsAll, membersAll] = await Promise.all([
+      readTab('Tasks'), readTab('Notifications').catch(() => []), readTab('Members')
+    ]);
+    const dueToday = tasksAll.filter(t => t.assignee && t.endDate === todayStr && t.status !== 'done');
+    if (!dueToday.length) return;
+    const alreadySent = (userId, taskId) => notificationsAll.some(n =>
+      n.userId === userId && n.taskId === taskId && n.type === 'due_today' && (n.createdAt || '').slice(0, 10) === todayStr
+    );
+    for (const t of dueToday) {
+      if (!alreadySent(t.assignee, t.id)) {
+        await addNotification(t.assignee, t.id, 'due_today', `Today is the delivery day for "${t.title}"`, 'System');
+      }
+      if (t.createdById && t.createdById !== 'owner' && t.createdById !== t.assignee && !alreadySent(t.createdById, t.id)) {
+        const assigneeName = (membersAll.find(m => m.id === t.assignee) || {}).name || 'Someone';
+        await addNotification(t.createdById, t.id, 'due_today', `Today is the delivery day for "${t.title}" (assigned to ${assigneeName})`, 'System');
+      }
+    }
+  } catch (e) {
+    console.error('due-today reminder check failed:', e.message);
+  }
+}
+
 // Owner-only full data export — a manual substitute for a true automatic
 // backup, since this is a plain request-driven Node server with no
 // persistent scheduler to run one on a timer. Returns every tab's raw data
@@ -754,6 +792,7 @@ app.get('/api/backup/export', requireAuth, requireOwner, async (req, res) => {
 app.get('/api/state', requireAuth, async (req, res) => {
   try {
     checkOverdueEscalations().catch(() => {}); // fire-and-forget, self-throttled, never blocks the response
+    checkDueTodayReminders().catch(() => {}); // same — fire-and-forget, self-throttled
     // Members+Tasks+Notifications+Achievements in ONE Sheets read instead of
     // up to 4 — this is the hottest endpoint in the app (polled every ~8s by
     // every open tab), so batching here is what actually keeps it under the
@@ -996,7 +1035,7 @@ app.post('/api/tasks', requireAuth, requireAssigner, async (req, res) => {
         startDate, endDate, sequence,
         zone, project, building: building || '', taskType,
         numDrawings, revisionNo, sheetFormat, checklist, taskItem,
-        assignedBy: actorLabel(req.user),
+        assignedBy: actorLabel(req.user), createdById: req.user.id || 'owner',
         history: [{ status: 'todo', at: today() }], createdAt: today()
       };
       rows.push(newTask);
@@ -1049,7 +1088,7 @@ app.post('/api/tasks/bulk', requireAuth, requireAssigner, async (req, res) => {
           startDate, endDate, sequence,
           zone, project, building, taskType,
           numDrawings: 0, revisionNo: '', sheetFormat: '', checklist, taskItem,
-          assignedBy: actorLabel(req.user),
+          assignedBy: actorLabel(req.user), createdById: req.user.id || 'owner',
           history: [{ status: 'todo', at: today() }], createdAt: today()
         };
         rows.push(newTask);
@@ -1292,7 +1331,7 @@ app.post('/api/tasks/restore', requireAuth, requireLeader, async (req, res) => {
         zone: snapshot.zone || '', project: snapshot.project || '', building: snapshot.building || '', taskType: snapshot.taskType || '',
         numDrawings: snapshot.numDrawings || 0, revisionNo: snapshot.revisionNo || '', sheetFormat: snapshot.sheetFormat || '',
         checklist: Array.isArray(snapshot.checklist) ? snapshot.checklist : [],
-        taskItem: snapshot.taskItem || '', assignedBy: snapshot.assignedBy || ''
+        taskItem: snapshot.taskItem || '', assignedBy: snapshot.assignedBy || '', createdById: snapshot.createdById || ''
       };
       if (restoredTask.assignee) {
         scheduler.restoreRemovedTask(rows, restoredTask.assignee, restoredTask);
@@ -1342,7 +1381,7 @@ app.post('/api/tasks/:id/duplicate', requireAuth, requireAssigner, async (req, r
           zone: original.zone || '', project: original.project || '', building: original.building || '', taskType: original.taskType || '',
           numDrawings: original.numDrawings || 0, revisionNo: original.revisionNo || '', sheetFormat: original.sheetFormat || '',
           checklist: Array.isArray(original.checklist) ? original.checklist.map(c => ({ id: genId('cl'), text: c.text, done: false })) : [],
-          taskItem: original.taskItem || '', assignedBy: actorLabel(req.user)
+          taskItem: original.taskItem || '', assignedBy: actorLabel(req.user), createdById: req.user.id || 'owner'
         };
         rows.push(dup);
         created.push(dup);

@@ -336,6 +336,7 @@
       if(firstLoadRetryTimer){ clearTimeout(firstLoadRetryTimer); firstLoadRetryTimer = null; }
       renderApp();
       maybeShowCelebration();
+      maybeShowDueTodayReminder();
     }catch(e){
       if(e.message && e.message.toLowerCase().includes('session')){
         document.getElementById('logoutBtn').click();
@@ -1857,6 +1858,40 @@
       try{ await api('POST', `/api/achievements/${c.id}/seen`); }catch(e){ /* best-effort — worst case it's re-marked seen next load */ }
     };
     continueBtn.addEventListener('click', onContinue);
+  }
+
+  // ---------- DUE-TODAY REMINDER (popup, not just the bell) ----------
+  // Server creates a `due_today` notification (see checkDueTodayReminders in
+  // server.js) for the assignee and, separately, whoever created the task —
+  // once per task per calendar day. It shows in the regular bell list like
+  // any other notification, but also pops this modal automatically so it
+  // can't be missed, mirroring the celebration flow above.
+  let dueTodayPopupActive = false;
+  function maybeShowDueTodayReminder(){
+    if(dueTodayPopupActive || celebrationActive) return; // avoid stacking both modals at once — this one just waits for the next poll
+    const n = (state.notifications || []).find(x=> x.type==='due_today' && !x.read);
+    if(!n) return;
+    dueTodayPopupActive = true;
+    showDueTodayReminder(n);
+  }
+  function showDueTodayReminder(n){
+    document.getElementById('dueTodayMessage').textContent = n.message;
+    const overlay = document.getElementById('dueTodayOverlay');
+    overlay.classList.add('open');
+    const okBtn = document.getElementById('dueTodayOkBtn');
+    const onOk = async () => {
+      okBtn.removeEventListener('click', onOk);
+      overlay.classList.remove('open');
+      dueTodayPopupActive = false;
+      try{
+        await api('POST', `/api/notifications/${n.id}/read`);
+        n.read = true;
+        if(state.unreadCount > 0) state.unreadCount--;
+        renderNotifBadge();
+      }catch(e){ /* best-effort — worst case it pops again next poll */ }
+      maybeShowDueTodayReminder(); // show the next one right away if there's more than one due today
+    };
+    okBtn.addEventListener('click', onOk);
   }
 
   // Lightweight canvas confetti — a fixed, small particle count, plain
