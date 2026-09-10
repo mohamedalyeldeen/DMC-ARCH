@@ -31,6 +31,9 @@ body{background:var(--ink);color:var(--text-on-ink);font-family:'Inter',sans-ser
 .auth-note{font-size:11px;color:var(--text-dim-on-paper);margin-top:14px;line-height:1.5;}
 .auth-error{color:var(--rust);font-size:12px;margin-top:6px;min-height:16px;}
 
+#sidebarToggleBtn{display:none;}
+.sidebar-backdrop{display:none;}
+
 .sidebar{width:250px;flex-shrink:0;background:var(--ink-2);border-right:1px solid var(--line-on-ink);display:flex;flex-direction:column;padding:22px 18px;overflow-y:auto;}
 .brand{font-family:'Fraunces',serif;font-weight:700;font-size:22px;letter-spacing:0.2px;color:var(--text-on-ink);margin-bottom:2px;}
 .brand span{color:var(--amber);}
@@ -396,3 +399,28 @@ input.date-invalid{border-color:var(--rust) !important;}
 .achv-row .achv-date{ margin-left:auto; font-family:'IBM Plex Mono',monospace; font-size:10px; color:var(--text-dim-on-paper); }
 .achv-empty{ font-size:12.5px; color:var(--text-dim-on-paper); padding:10px 2px; }
 .stats-section-label{ font-family:'IBM Plex Mono',monospace; font-size:10.5px; letter-spacing:.6px; text-transform:uppercase; color:var(--text-dim-on-paper); margin:0 0 10px; }
+
+/* ── Mobile layout ──
+   The sidebar (250px, always visible) and a one-row topbar with 7 tabs plus
+   a dozen buttons both assume desktop width. Below this breakpoint the
+   sidebar becomes a slide-in drawer (opened via #sidebarToggleBtn, closed by
+   tapping the backdrop or switching tabs — see activateTab() in app.js) and
+   the tabs row scrolls horizontally instead of wrapping into a tall stack.
+   Moving a card between columns already works by tapping its Back/Submit/
+   Approve button (see renderTicket() in app.js), so nothing else here needs
+   a touch-specific replacement — only layout changes. */
+@media (max-width:860px){
+  #sidebarToggleBtn{display:inline-flex;align-items:center;justify-content:center;}
+  .sidebar{position:fixed;top:0;left:0;bottom:0;max-width:82vw;z-index:150;transform:translateX(-100%);transition:transform .25s ease;box-shadow:4px 0 24px rgba(0,0,0,.4);}
+  .sidebar.open{transform:translateX(0);}
+  .sidebar-backdrop.open{display:block;position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:140;}
+
+  .topbar{padding:12px 14px;gap:8px;}
+  .tabs{overflow-x:auto;-webkit-overflow-scrolling:touch;max-width:100%;padding-bottom:2px;}
+  .tabs .tab-btn{flex-shrink:0;}
+
+  .board{padding:12px 14px;gap:12px;}
+  .column{width:85vw;min-width:85vw;}
+
+  .dash-wrap{padding:14px 16px;}
+}

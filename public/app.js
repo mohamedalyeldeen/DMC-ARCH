@@ -501,8 +501,27 @@
   function activateTab(name, btnId){
     activeTab = name;
     ALL_TAB_BTNS.forEach(id=> document.getElementById(id).classList.toggle('active', id===btnId));
+    closeSidebarDrawer(); // no-op on desktop; on mobile the sidebar is an overlay, so switching views should hide it
     renderApp();
   }
+
+  // ---------- MOBILE SIDEBAR DRAWER ----------
+  // On desktop the sidebar is always visible, so these classes have no
+  // visual effect there — only the mobile media query in styles.css gives
+  // .sidebar.open/.sidebar-backdrop.open any styling.
+  function openSidebarDrawer(){
+    document.getElementById('sidebar').classList.add('open');
+    document.getElementById('sidebarBackdrop').classList.add('open');
+  }
+  function closeSidebarDrawer(){
+    document.getElementById('sidebar').classList.remove('open');
+    document.getElementById('sidebarBackdrop').classList.remove('open');
+  }
+  document.getElementById('sidebarToggleBtn').addEventListener('click', ()=>{
+    const isOpen = document.getElementById('sidebar').classList.contains('open');
+    if(isOpen) closeSidebarDrawer(); else openSidebarDrawer();
+  });
+  document.getElementById('sidebarBackdrop').addEventListener('click', closeSidebarDrawer);
   document.getElementById('tabBoardBtn').addEventListener('click', ()=> activateTab('board','tabBoardBtn'));
   document.getElementById('tabGanttBtn').addEventListener('click', ()=> activateTab('gantt','tabGanttBtn'));
   document.getElementById('tabDashBtn').addEventListener('click', ()=> activateTab('dashboard','tabDashBtn'));
