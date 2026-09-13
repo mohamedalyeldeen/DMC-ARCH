@@ -83,7 +83,7 @@ body{background:var(--ink);color:var(--text-on-ink);font-family:'Inter',sans-ser
 .search-box:focus{outline:none;border-color:var(--amber);}
 .primary-btn{background:var(--amber);color:var(--ink);border:none;padding:10px 16px;border-radius:var(--radius);font-family:'Inter',sans-serif;font-weight:600;font-size:13px;cursor:pointer;flex-shrink:0;}
 .primary-btn:hover{background:var(--amber-dim);}
-.user-strip{display:flex;align-items:center;gap:8px;flex-shrink:0;margin-left:auto;}
+.user-strip{display:flex;flex-wrap:wrap;align-items:center;gap:8px;flex-shrink:0;margin-left:auto;justify-content:flex-end;}
 .role-badge{font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:.5px;color:var(--text-dim-on-ink);border:1px solid var(--line-on-ink);border-radius:10px;padding:4px 10px;white-space:nowrap;}
 .mini-btn{background:transparent;border:1px solid var(--line-on-ink);color:var(--text-dim-on-ink);padding:7px 10px;border-radius:var(--radius);font-size:11px;cursor:pointer;font-family:'IBM Plex Mono',monospace;white-space:nowrap;}
 .mini-btn:hover{border-color:var(--amber);color:var(--paper);}
@@ -418,6 +418,10 @@ input.date-invalid{border-color:var(--rust) !important;}
   .topbar{padding:12px 14px;gap:8px;}
   .tabs{overflow-x:auto;-webkit-overflow-scrolling:touch;max-width:100%;padding-bottom:2px;}
   .tabs .tab-btn{flex-shrink:0;}
+  /* Once .user-strip wraps onto its own row (see the base rule's
+     flex-wrap), the desktop-only "push to the far right" behavior just
+     produces ragged, oddly-indented rows — left-align it here instead. */
+  .user-strip{margin-left:0;justify-content:flex-start;width:100%;}
 
   .board{padding:12px 14px;gap:12px;}
   .column{width:85vw;min-width:85vw;}
