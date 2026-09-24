@@ -2981,13 +2981,20 @@
     wireLogInteractions();
   }
 
-  // ---------- CHAT (floating widget, group channels one per team) ----------
+  // ---------- CHAT (floating widget — team channels + direct messages) ----------
   // Available from any tab via the floating bubble button — not a page you
-  // have to navigate to. Regular members/leads/seniors only ever see their
-  // own team's channel; owner and viewers can switch between all four for
-  // oversight (viewers are read-only). Polls a bit faster than the rest of
+  // have to navigate to. Team channels: regular members/leads/seniors only
+  // ever see their own team's; owner can switch between all four for
+  // oversight. Direct messages: open to anyone (any non-viewer to any other
+  // non-viewer, no team restriction) via the "Direct" tab. Viewers get no
+  // chat access at all, same as before. Polls a bit faster than the rest of
   // the app (every 4s) but only while the panel is actually open.
+  let chatChannelType = 'team'; // 'team' | 'dm'
   let chatTeamId = null;
+  let chatDmWith = null;        // member id, or 'owner', of the open DM partner
+  let chatDmThreads = [];       // [{userId,name,lastMessageAt,lastMessageText,unreadCount}]
+  let chatEveryone = [];        // [{id,name}] — everyone this user can start a new DM with
+  let chatMentionable = [];     // [{id,name}] for whichever channel is currently open
   let chatPollTimer = null;
   let chatPanelOpen = false;
   let chatLastSignature = null; // used to skip re-rendering the message list when nothing changed (avoids flicker)
@@ -2995,6 +3002,15 @@
   function chatChannelOptions(){
     if(isOwner()) return state.teams;
     return state.teams.filter(t=>t.id===session.teamId);
+  }
+
+  async function loadDmThreads(){
+    if(isViewer()) return;
+    try{
+      const data = await api('GET', '/api/messages/dm-threads');
+      chatDmThreads = data.threads || [];
+      chatEveryone = data.everyone || [];
+    }catch(e){ /* best-effort — the thread list just won't be fresh this time */ }
   }
 
   function toggleChatFloat(){
@@ -3009,6 +3025,7 @@
       chatTeamId = options[0] ? options[0].id : null;
     }
     chatLastSignature = null;
+    loadDmThreads().then(()=>{ if(chatChannelType==='dm') renderChatShell(); });
     renderChatShell();
     loadChatMessages(true);
     if(chatPollTimer) clearInterval(chatPollTimer);
@@ -3023,29 +3040,83 @@
   document.getElementById('chatBubbleBtn').addEventListener('click', toggleChatFloat);
   document.getElementById('chatFloatCloseBtn').addEventListener('click', closeChatFloat);
 
+  function renderDmThreadList(){
+    const newRowHtml = chatEveryone.length ? `
+      <select id="chatNewDmSelect" class="chat-new-dm-select">
+        <option value="">+ New message…</option>
+        ${chatEveryone.map(p=>`<option value="${p.id}">${escapeHtml(p.name)}</option>`).join('')}
+      </select>
+    ` : '';
+    const listHtml = chatDmThreads.length ? chatDmThreads.map(t=>`
+      <div class="chat-dm-item" data-user="${t.userId}">
+        <div class="chat-dm-item-main">
+          <span class="chat-dm-item-name">${escapeHtml(t.name)}</span>
+          <span class="chat-dm-item-preview">${escapeHtml((t.lastMessageText||'').slice(0,40))}</span>
+        </div>
+        ${t.unreadCount>0 ? `<span class="chat-dm-item-badge">${t.unreadCount>99?'99+':t.unreadCount}</span>` : ''}
+      </div>
+    `).join('') : '<div class="notif-empty">No direct messages yet.</div>';
+    return `<div class="chat-channel-row">${newRowHtml}</div><div class="chat-dm-list">${listHtml}</div>`;
+  }
+
   function renderChatShell(){
     const el = document.getElementById('chatFloatBody');
-    const options = chatChannelOptions();
-    const showSwitcher = isOwner();
-    const channelRow = showSwitcher ? `
-      <div class="chat-channel-row">
-        ${options.map(t=>`<button type="button" class="chat-channel-btn ${t.id===chatTeamId?'active':''}" data-team="${t.id}">${escapeHtml(t.name)}</button>`).join('')}
-      </div>
-    ` : `<div class="chat-channel-row"><span style="font-size:12.5px;color:var(--text-dim-on-ink);">${escapeHtml((options[0]&&options[0].name)||'Your team')} channel</span></div>`;
-    const inputRow = isViewer() ? '' : `
-      <div class="chat-input-row">
-        <textarea id="chatInput" placeholder="Message your team…" maxlength="2000"></textarea>
-        <button type="button" class="chat-send-btn" id="chatSendBtn">Send</button>
+    const typeTabsHtml = `
+      <div class="chat-type-tabs">
+        <button type="button" class="chat-type-tab ${chatChannelType==='team'?'active':''}" id="chatTypeTeamBtn">Teams</button>
+        <button type="button" class="chat-type-tab ${chatChannelType==='dm'?'active':''}" id="chatTypeDmBtn">Direct</button>
       </div>
     `;
+
+    let channelRow, showingConversation;
+    if(chatChannelType==='team'){
+      const options = chatChannelOptions();
+      const showSwitcher = isOwner();
+      channelRow = showSwitcher ? `
+        <div class="chat-channel-row">
+          ${options.map(t=>`<button type="button" class="chat-channel-btn ${t.id===chatTeamId?'active':''}" data-team="${t.id}">${escapeHtml(t.name)}</button>`).join('')}
+        </div>
+      ` : `<div class="chat-channel-row"><span style="font-size:12.5px;color:var(--text-dim-on-paper);">${escapeHtml((options[0]&&options[0].name)||'Your team')} channel</span></div>`;
+      showingConversation = true;
+    } else if(!chatDmWith){
+      channelRow = renderDmThreadList();
+      showingConversation = false;
+    } else {
+      const other = chatEveryone.find(p=>p.id===chatDmWith) || chatDmThreads.find(t=>t.userId===chatDmWith) || {name:'Direct message'};
+      channelRow = `<div class="chat-channel-row"><button type="button" class="chat-back-btn" id="chatDmBackBtn">‹ ${escapeHtml(other.name)}</button></div>`;
+      showingConversation = true;
+    }
+
+    const inputRow = (isViewer() || !showingConversation) ? '' : `
+      <div class="chat-input-wrap">
+        <div class="chat-mention-dropdown" id="chatMentionDropdown" style="display:none;"></div>
+        <div class="chat-input-row">
+          <textarea id="chatInput" placeholder="${chatChannelType==='dm'?'Message them…':'Message your team…'}" maxlength="2000"></textarea>
+          <button type="button" class="chat-send-btn" id="chatSendBtn">Send</button>
+        </div>
+      </div>
+    `;
+
     el.innerHTML = `
       <div class="dash-card">
+        ${typeTabsHtml}
         ${channelRow}
-        <div class="chat-messages" id="chatMessages"></div>
+        ${showingConversation ? '<div class="chat-messages" id="chatMessages"></div>' : ''}
         ${inputRow}
       </div>
     `;
-    if(showSwitcher){
+
+    document.getElementById('chatTypeTeamBtn').addEventListener('click', ()=>{
+      if(chatChannelType==='team') return;
+      chatChannelType='team'; chatLastSignature=null; renderChatShell(); loadChatMessages(true);
+    });
+    document.getElementById('chatTypeDmBtn').addEventListener('click', ()=>{
+      if(chatChannelType==='dm') return;
+      chatChannelType='dm'; chatLastSignature=null;
+      loadDmThreads().then(renderChatShell);
+    });
+
+    if(chatChannelType==='team' && isOwner()){
       el.querySelectorAll('.chat-channel-btn').forEach(btn=>{
         btn.addEventListener('click', ()=>{
           chatTeamId = btn.dataset.team;
@@ -3055,48 +3126,162 @@
         });
       });
     }
+    if(chatChannelType==='dm'){
+      if(!chatDmWith){
+        const sel = document.getElementById('chatNewDmSelect');
+        if(sel) sel.addEventListener('change', ()=>{
+          if(!sel.value) return;
+          chatDmWith = sel.value; chatLastSignature = null;
+          renderChatShell(); loadChatMessages(true);
+        });
+        el.querySelectorAll('.chat-dm-item').forEach(row=>{
+          row.addEventListener('click', ()=>{
+            chatDmWith = row.dataset.user; chatLastSignature = null;
+            renderChatShell(); loadChatMessages(true);
+          });
+        });
+      } else {
+        document.getElementById('chatDmBackBtn').addEventListener('click', ()=>{
+          chatDmWith = null; chatLastSignature = null;
+          loadDmThreads().then(renderChatShell);
+        });
+      }
+    }
+
+    wireChatInput();
+  }
+
+  function wireChatInput(){
     const sendBtn = document.getElementById('chatSendBtn');
     const input = document.getElementById('chatInput');
-    if(sendBtn && input){
-      const send = async ()=>{
-        const text = input.value.trim();
-        if(!text || !chatTeamId) return;
-        sendBtn.disabled = true;
-        try{
-          await api('POST','/api/messages',{teamId:chatTeamId, text});
-          input.value='';
-          chatLastSignature = null;
-          await loadChatMessages(true);
-        }catch(e){ alert(e.message); }
-        finally{ sendBtn.disabled = false; input.focus(); }
-      };
-      sendBtn.addEventListener('click', send);
-      input.addEventListener('keydown', (e)=>{
-        if(e.key==='Enter' && !e.shiftKey){ e.preventDefault(); send(); }
-      });
-    }
+    if(!sendBtn || !input) return;
+    const send = async ()=>{
+      const text = input.value.trim();
+      if(!text) return;
+      if(chatChannelType==='team' && !chatTeamId) return;
+      if(chatChannelType==='dm' && !chatDmWith) return;
+      sendBtn.disabled = true;
+      try{
+        const body = chatChannelType==='dm' ? {dmWith: chatDmWith, text} : {teamId: chatTeamId, text};
+        await api('POST','/api/messages', body);
+        input.value='';
+        hideMentionDropdown();
+        chatLastSignature = null;
+        await loadChatMessages(true);
+        if(chatChannelType==='dm') loadDmThreads();
+      }catch(e){ alert(e.message); }
+      finally{ sendBtn.disabled = false; input.focus(); }
+    };
+    sendBtn.addEventListener('click', send);
+    input.addEventListener('keydown', (e)=>{
+      if(mentionDropdownVisible()){
+        if(e.key==='ArrowDown'){ e.preventDefault(); moveMentionSelection(1); return; }
+        if(e.key==='ArrowUp'){ e.preventDefault(); moveMentionSelection(-1); return; }
+        if(e.key==='Enter' || e.key==='Tab'){ e.preventDefault(); chooseMentionSelection(); return; }
+        if(e.key==='Escape'){ hideMentionDropdown(); return; }
+      }
+      if(e.key==='Enter' && !e.shiftKey){ e.preventDefault(); send(); }
+    });
+    input.addEventListener('input', ()=> updateMentionDropdown(input));
+    input.addEventListener('blur', ()=> setTimeout(hideMentionDropdown, 150)); // delayed so a suggestion click still registers first
+  }
+
+  // ---------- @MENTION AUTOCOMPLETE ----------
+  // chatMentionable (set from the last GET /api/messages response) is who's
+  // eligible to be @mentioned in whichever channel is currently open — the
+  // server independently re-derives and validates mentions from the raw
+  // text on send, this is purely the typing UX.
+  let mentionMatches = [];
+  let mentionSelIndex = 0;
+  let mentionTriggerStart = -1;
+
+  function mentionDropdownVisible(){
+    const dd = document.getElementById('chatMentionDropdown');
+    return !!dd && dd.style.display !== 'none';
+  }
+  function hideMentionDropdown(){
+    const dd = document.getElementById('chatMentionDropdown');
+    if(dd){ dd.style.display='none'; dd.innerHTML=''; }
+    mentionMatches = []; mentionTriggerStart = -1;
+  }
+  function updateMentionDropdown(input){
+    const dd = document.getElementById('chatMentionDropdown');
+    if(!dd || !chatMentionable.length){ hideMentionDropdown(); return; }
+    const cursor = input.selectionStart;
+    const match = input.value.slice(0, cursor).match(/(?:^|\s)@([^\s@]*)$/);
+    if(!match){ hideMentionDropdown(); return; }
+    const partial = match[1].toLowerCase();
+    mentionTriggerStart = cursor - match[1].length - 1;
+    mentionMatches = chatMentionable.filter(m=> m.name.toLowerCase().includes(partial)).slice(0,6);
+    if(!mentionMatches.length){ hideMentionDropdown(); return; }
+    mentionSelIndex = 0;
+    renderMentionDropdown();
+  }
+  function renderMentionDropdown(){
+    const dd = document.getElementById('chatMentionDropdown');
+    dd.innerHTML = mentionMatches.map((m,i)=>`<div class="chat-mention-option ${i===mentionSelIndex?'active':''}" data-idx="${i}">${escapeHtml(m.name)}</div>`).join('');
+    dd.style.display = 'block';
+    dd.querySelectorAll('.chat-mention-option').forEach(opt=>{
+      // mousedown (not click) + preventDefault so this fires before the
+      // textarea's blur handler would otherwise close the dropdown first.
+      opt.addEventListener('mousedown', (e)=>{ e.preventDefault(); mentionSelIndex = parseInt(opt.dataset.idx,10); chooseMentionSelection(); });
+    });
+  }
+  function moveMentionSelection(delta){
+    mentionSelIndex = (mentionSelIndex + delta + mentionMatches.length) % mentionMatches.length;
+    renderMentionDropdown();
+  }
+  function chooseMentionSelection(){
+    const m = mentionMatches[mentionSelIndex];
+    const input = document.getElementById('chatInput');
+    if(!m || mentionTriggerStart<0 || !input) return;
+    const before = input.value.slice(0, mentionTriggerStart);
+    const after = input.value.slice(input.selectionStart);
+    const insertion = '@'+m.name+' ';
+    input.value = before + insertion + after;
+    const newPos = (before+insertion).length;
+    input.setSelectionRange(newPos, newPos);
+    hideMentionDropdown();
+    input.focus();
+  }
+
+  // Wraps every "@Full Name" occurrence (for anyone mentionable in this
+  // channel) in a highlighted span. Longest names first so "Mohamed Ali"
+  // isn't shadowed by a shorter "Mohamed" also being mentionable.
+  function renderMessageText(text, mentionNames){
+    if(!mentionNames || !mentionNames.length) return escapeHtml(text||'');
+    const names = mentionNames.slice().sort((a,b)=>b.length-a.length).map(n=> n.replace(/[.*+?^${}()|[\]\\]/g,'\\$&'));
+    const re = new RegExp('(@(?:'+names.join('|')+'))', 'gi');
+    return (text||'').split(re).map((part,i)=> i%2===1 ? `<span class="chat-mention">${escapeHtml(part)}</span>` : escapeHtml(part)).join('');
   }
 
   async function loadChatMessages(forceScroll){
-    if(!chatTeamId || !chatPanelOpen) return;
+    if(!chatPanelOpen) return;
+    if(chatChannelType==='team' && !chatTeamId) return;
+    if(chatChannelType==='dm' && !chatDmWith) return; // browsing the thread list — nothing open to poll
     const listEl = document.getElementById('chatMessages');
     if(!listEl) return;
+    const qs = chatChannelType==='dm' ? 'dmWith='+encodeURIComponent(chatDmWith) : 'teamId='+encodeURIComponent(chatTeamId);
     try{
-      const data = await api('GET', '/api/messages?teamId='+encodeURIComponent(chatTeamId));
+      const data = await api('GET', '/api/messages?'+qs);
       const msgs = data.messages || [];
+      chatMentionable = data.mentionable || [];
       // Skip touching the DOM entirely if nothing actually changed — this
       // is what was causing the visible "blinking": re-rendering identical
       // content on every 4s poll retriggers layout/paint for no reason.
-      const signature = chatTeamId+'|'+msgs.length+'|'+(msgs[msgs.length-1] ? msgs[msgs.length-1].id : '');
+      const channelKey = chatChannelType+':'+(chatChannelType==='dm'?chatDmWith:chatTeamId);
+      const signature = channelKey+'|'+msgs.length+'|'+(msgs[msgs.length-1] ? msgs[msgs.length-1].id : '');
       if(signature === chatLastSignature && !forceScroll) return;
       chatLastSignature = signature;
       const wasAtBottom = listEl.scrollTop + listEl.clientHeight >= listEl.scrollHeight - 20;
+      const myChatId = session && (session.role==='owner' ? 'owner' : session.id);
+      const mentionNames = chatMentionable.map(m=>m.name);
       listEl.innerHTML = msgs.map(m=>{
-        const own = session && m.senderId===session.id;
+        const own = m.senderId===myChatId;
         return `
           <div class="chat-msg ${own?'own':''}">
             ${own?'':`<div class="chat-msg-sender">${escapeHtml(m.senderName||'Someone')}</div>`}
-            <div class="chat-msg-text">${escapeHtml(m.text||'')}</div>
+            <div class="chat-msg-text">${renderMessageText(m.text||'', mentionNames)}</div>
             <div class="chat-msg-time">${fmtDateTime(m.createdAt)}</div>
           </div>
         `;

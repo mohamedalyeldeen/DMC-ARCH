@@ -220,6 +220,25 @@ body{background:var(--ink);color:var(--text-on-ink);font-family:'Inter',sans-ser
 .chat-send-btn{padding:10px 18px;border-radius:6px;border:none;background:var(--amber);color:var(--ink);font-weight:600;cursor:pointer;font-family:inherit;font-size:13px;}
 .chat-send-btn:disabled{opacity:.5;cursor:default;}
 
+.chat-type-tabs{display:flex;gap:6px;margin-bottom:12px;border-bottom:1px solid var(--line-on-paper);padding-bottom:10px;}
+.chat-type-tab{padding:6px 4px;border:none;background:transparent;color:var(--text-dim-on-paper);font-size:12.5px;font-weight:600;cursor:pointer;font-family:inherit;border-bottom:2px solid transparent;}
+.chat-type-tab.active{color:var(--text-on-paper);border-bottom-color:var(--amber);}
+.chat-back-btn{padding:6px 4px;border:none;background:transparent;color:var(--text-on-paper);font-weight:600;font-size:13px;cursor:pointer;font-family:inherit;}
+.chat-new-dm-select{width:100%;padding:8px 10px;border-radius:6px;border:1px solid var(--line-on-paper);background:#fff;color:var(--text-on-paper);font-family:inherit;font-size:12.5px;}
+.chat-dm-list{display:flex;flex-direction:column;gap:4px;overflow-y:auto;flex:1;}
+.chat-dm-item{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:9px 8px;border-radius:6px;cursor:pointer;}
+.chat-dm-item:hover{background:rgba(27,36,48,0.05);}
+.chat-dm-item-main{display:flex;flex-direction:column;gap:2px;min-width:0;}
+.chat-dm-item-name{font-size:13px;font-weight:600;color:var(--text-on-paper);}
+.chat-dm-item-preview{font-size:11.5px;color:var(--text-dim-on-paper);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:190px;}
+.chat-dm-item-badge{flex-shrink:0;background:var(--rust);color:#fff;border-radius:10px;padding:1px 7px;font-size:10.5px;font-family:'IBM Plex Mono',monospace;}
+.chat-mention{background:rgba(0,0,0,.15);border-radius:3px;padding:0 3px;font-weight:700;}
+.chat-input-wrap{position:relative;margin-top:12px;}
+.chat-input-wrap .chat-input-row{margin-top:0;}
+.chat-mention-dropdown{position:absolute;bottom:100%;left:0;right:0;margin-bottom:6px;background:#fff;border:1px solid var(--line-on-paper);border-radius:6px;box-shadow:0 6px 20px rgba(0,0,0,.15);max-height:150px;overflow-y:auto;z-index:10;}
+.chat-mention-option{padding:8px 12px;font-size:12.5px;color:var(--text-on-paper);cursor:pointer;}
+.chat-mention-option.active{background:var(--paper-dim);}
+
 /* ── Checklist preview (task modal, read-only — content is template-driven) ── */
 .checklist-preview-row{display:flex;align-items:flex-start;gap:7px;padding:3px 0;font-size:12.5px;color:var(--text-dim-on-paper);}
 .checklist-preview-row .cl-mark{flex-shrink:0;width:14px;}

@@ -508,29 +508,54 @@ app.post('/api/project-targets', requireAuth, requireOwner, async (req, res) => 
   } catch (e) { sendErr(res, e); }
 });
 
-// ---------- GROUP CHAT ----------
-// One channel per team (the 4 existing groups). Any member of a team can
-// read/post in their own team's channel; the owner and viewers can
-// read/switch between all four for oversight (viewers are read-only, same
-// as everywhere else in the app).
-// One channel per team (the 4 existing groups). Any member of a team can
-// read/post in their own team's channel; the owner can read/switch between
-// all four for oversight. Viewers get no chat access at all — read-only
-// oversight elsewhere in the app, but chat is excluded entirely.
+// ---------- CHAT (team channels + direct messages) ----------
+// Team channels: one per team (the 4 existing groups). Any member of a team
+// can read/post in their own team's channel; the owner can read/switch
+// between all four for oversight. Viewers get no chat access at all —
+// read-only oversight elsewhere in the app, but chat is excluded entirely.
 function allowedChatTeamIds(user, teamsAll) {
   if (user.isViewer) return [];
   if (user.role === 'owner') return teamsAll.map(t => t.id);
   return user.teamId ? [user.teamId] : [];
 }
 
+// Direct messages: open to anyone who isn't a viewer, to anyone else who
+// isn't a viewer — no team restriction, unlike channels above. Resolves and
+// permission-checks either addressing mode (teamId XOR dmWith) for both the
+// GET and POST handlers below, and returns who's @mentionable in that
+// channel: for a team channel, that's the team's own roster plus the owner
+// and every team lead/senior (everyone who can already read that channel
+// per allowedChatTeamIds — mentioning someone who couldn't otherwise see
+// the message would just notify them of something they can't open).
+function resolveChatChannel(req, teamId, dmWith, teamsAll, membersAll) {
+  if (req.user.isViewer) throw new Error('FORBIDDEN');
+  const myId = req.user.id || 'owner';
+  if (dmWith) {
+    if (dmWith === myId) throw new Error('BAD_REQUEST');
+    const targetMember = dmWith === 'owner' ? null : membersAll.find(m => m.id === dmWith);
+    if (dmWith !== 'owner' && (!targetMember || targetMember.isViewer)) throw new Error('NOT_FOUND');
+    const targetName = dmWith === 'owner' ? 'Owner' : targetMember.name;
+    const myName = req.user.role === 'owner' ? 'Owner' : (req.user.name || 'Someone');
+    return { teamId: '', dmId: makeDmId(myId, dmWith), mentionable: [{ id: myId, name: myName }, { id: dmWith, name: targetName }] };
+  }
+  if (!teamId) throw new Error('BAD_REQUEST');
+  if (!allowedChatTeamIds(req.user, teamsAll).includes(teamId)) throw new Error('FORBIDDEN');
+  const seen = new Set();
+  const mentionable = [{ id: 'owner', name: 'Owner' }]
+    .concat(membersAll.filter(m => !m.isViewer && (m.teamId === teamId || m.isTeamLead || m.isSenior)).map(m => ({ id: m.id, name: m.name })))
+    .filter(m => (seen.has(m.id) ? false : (seen.add(m.id), true)));
+  return { teamId, dmId: '', mentionable };
+}
+
 app.get('/api/messages', requireAuth, async (req, res) => {
   try {
-    const teamId = req.query.teamId;
-    if (!teamId) throw new Error('BAD_REQUEST');
-    const teamsAll = await getTeamsCached();
-    if (!allowedChatTeamIds(req.user, teamsAll).includes(teamId)) throw new Error('FORBIDDEN');
+    const teamId = req.query.teamId || '';
+    const dmWith = req.query.dmWith || '';
+    if (!teamId && !dmWith) throw new Error('BAD_REQUEST');
+    const [teamsAll, membersAll] = await Promise.all([getTeamsCached(), getMembersCached()]);
+    const channel = resolveChatChannel(req, teamId, dmWith, teamsAll, membersAll);
     const all = await getMessagesCached();
-    const messages = all.filter(m => m.teamId === teamId)
+    const messages = all.filter(m => channel.dmId ? m.dmId === channel.dmId : m.teamId === channel.teamId)
       .sort((a, b) => (a.createdAt || '').localeCompare(b.createdAt || ''))
       .slice(-200); // cap history so the channel doesn't grow unbounded per poll
     // Opening/polling this channel means the user is actively looking at
@@ -541,35 +566,78 @@ app.get('/api/messages', requireAuth, async (req, res) => {
     if (latest) {
       const myId = req.user.id || 'owner';
       const reads = await getChatReadsCached();
-      const existing = reads.find(r => r.userId === myId && r.teamId === teamId);
+      const existing = reads.find(r => r.userId === myId && (channel.dmId ? r.dmId === channel.dmId : r.teamId === channel.teamId));
       if (!existing || existing.lastReadAt < latest.createdAt) {
-        await upsertChatRead(myId, teamId);
+        await upsertChatRead(myId, channel.teamId, channel.dmId);
       }
     }
-    res.json({ messages, teams: teamsAll });
+    res.json({ messages, teams: teamsAll, mentionable: channel.mentionable });
   } catch (e) { sendErr(res, e); }
 });
 
 app.post('/api/messages', requireAuth, async (req, res) => {
   try {
-    if (req.user.isViewer) throw new Error('FORBIDDEN');
-    const { teamId, text } = req.body;
-    if (!teamId || !text || !text.trim()) throw new Error('BAD_REQUEST');
+    const { teamId, dmWith, text } = req.body;
+    if (!text || !text.trim()) throw new Error('BAD_REQUEST');
     const trimmed = text.trim().slice(0, 2000);
-    const teamsAll = await getTeamsCached();
-    if (!allowedChatTeamIds(req.user, teamsAll).includes(teamId)) throw new Error('FORBIDDEN');
+    const [teamsAll, membersAll] = await Promise.all([getTeamsCached(), getMembersCached()]);
+    const channel = resolveChatChannel(req, teamId || '', dmWith || '', teamsAll, membersAll);
+    const myId = req.user.id || 'owner';
+    const myName = req.user.role === 'owner' ? 'Owner' : (req.user.name || 'Someone');
+
+    // @mentions — matched against whoever's mentionable in this channel,
+    // longest name first so "Mohamed Ali" isn't shadowed by a shorter
+    // "Mohamed" also being mentionable.
+    const candidates = channel.mentionable.filter(m => m.id !== myId).sort((a, b) => b.name.length - a.name.length);
+    const mentions = [];
+    candidates.forEach(c => {
+      const re = new RegExp('@' + c.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
+      if (re.test(trimmed) && !mentions.includes(c.id)) mentions.push(c.id);
+    });
+
     let saved;
     await updateTabSafe('Messages', rows => {
       saved = {
-        id: genId('msg'), teamId, senderId: req.user.id || 'owner',
-        senderName: req.user.name || 'Someone', text: trimmed, createdAt: new Date().toISOString()
+        id: genId('msg'), teamId: channel.teamId, dmId: channel.dmId,
+        senderId: myId, senderName: myName, text: trimmed, mentions,
+        createdAt: new Date().toISOString()
       };
       rows.push(saved);
       return rows;
     });
     invalidateMessagesCache();
-    await upsertChatRead(req.user.id || 'owner', teamId); // sending it means you've obviously seen the channel up to now
+    await upsertChatRead(myId, channel.teamId, channel.dmId); // sending it means you've obviously seen the channel up to now
+    for (const uid of mentions) {
+      await addNotification(uid, '', 'mentioned', `${myName} mentioned you in chat: "${trimmed.slice(0, 120)}"`, myName);
+    }
     res.json(saved);
+  } catch (e) { sendErr(res, e); }
+});
+
+// Lists this user's existing DM threads (derived from message history —
+// there's no separate "conversation" record) with an unread count and last
+// message preview each, plus everyone they could start a NEW DM with.
+// Only fetched when the chat panel's Direct tab is actually opened, not on
+// every poll — GET /api/messages already carries the per-channel unread
+// count that matters for the bubble badge (see GET /api/state).
+app.get('/api/messages/dm-threads', requireAuth, async (req, res) => {
+  try {
+    if (req.user.isViewer) throw new Error('FORBIDDEN');
+    const myId = req.user.id || 'owner';
+    const [messagesAll, chatReadsAll, membersAll] = await Promise.all([getMessagesCached(), getChatReadsCached(), getMembersCached()]);
+    const myDmIds = Array.from(new Set(messagesAll.filter(m => m.dmId && dmParticipants(m.dmId).includes(myId)).map(m => m.dmId)));
+    const threads = myDmIds.map(did => {
+      const otherId = dmParticipants(did).find(id => id !== myId);
+      const otherName = otherId === 'owner' ? 'Owner' : ((membersAll.find(m => m.id === otherId) || {}).name || 'Someone');
+      const msgs = messagesAll.filter(m => m.dmId === did).sort((a, b) => (a.createdAt || '').localeCompare(b.createdAt || ''));
+      const last = msgs[msgs.length - 1];
+      const lastReadAt = (chatReadsAll.find(r => r.userId === myId && r.dmId === did) || {}).lastReadAt || '';
+      const unreadCount = msgs.filter(m => m.senderId !== myId && m.createdAt > lastReadAt).length;
+      return { userId: otherId, name: otherName, lastMessageAt: last ? last.createdAt : '', lastMessageText: last ? last.text : '', unreadCount };
+    }).sort((a, b) => (b.lastMessageAt || '').localeCompare(a.lastMessageAt || ''));
+    const everyone = (req.user.role !== 'owner' ? [{ id: 'owner', name: 'Owner' }] : [])
+      .concat(membersAll.filter(m => !m.isViewer && m.id !== myId).map(m => ({ id: m.id, name: m.name })));
+    res.json({ threads, everyone });
   } catch (e) { sendErr(res, e); }
 });
 
@@ -614,25 +682,39 @@ const messagesReader = makeCachedReader(() => readTab('Messages').catch(() => []
 async function getMessagesCached() { return messagesReader.get(); }
 function invalidateMessagesCache() { messagesReader.invalidate(); }
 
-// Per-user "last read" bookmarks for chat, one row per (userId, teamId).
+// Per-user "last read" bookmarks for chat, one row per (userId, teamId-or-dmId).
 // Small and rarely written (see upsertChatRead below), but still cached
 // since /api/state reads it on every poll.
 const chatReadsReader = makeCachedReader(() => readTab('ChatReads').catch(() => []), 15000);
 async function getChatReadsCached() { return chatReadsReader.get(); }
 function invalidateChatReadsCache() { chatReadsReader.invalidate(); }
 
-// Marks (userId, teamId) as read as of right now. Callers should only call
-// this when there's actually something newer than the existing bookmark —
-// this does a real Sheets write, and GET /api/messages calls it on every
-// ~4s chat poll, so an unconditional call here would turn a passive "is
-// there anything new" check into a write storm.
-async function upsertChatRead(userId, teamId) {
+// Members, cached briefly — only used for chat's DM/mention lookups (who
+// can I DM, who's mentionable in this channel), which now run on every
+// ~4s chat poll. Everywhere else that needs up-to-the-second freshness
+// (assignment permission checks, etc.) keeps using the uncached readTab.
+const chatMembersReader = makeCachedReader(() => readTab('Members'), 20000);
+async function getMembersCached() { return chatMembersReader.get(); }
+function invalidateMembersCache() { chatMembersReader.invalidate(); }
+
+// A direct-message thread's id is deterministic — both participants land on
+// the same 'dm:<idA>::<idB>' key (ids sorted) regardless of who opens it
+// first, and there's no separate "conversation" row to create.
+function makeDmId(a, b) { return 'dm:' + [a, b].sort().join('::'); }
+function dmParticipants(dmId) { return dmId.slice(3).split('::'); }
+
+// Marks (userId, teamId-or-dmId) as read as of right now. Callers should
+// only call this when there's actually something newer than the existing
+// bookmark — this does a real Sheets write, and GET /api/messages calls it
+// on every ~4s chat poll, so an unconditional call here would turn a
+// passive "is there anything new" check into a write storm.
+async function upsertChatRead(userId, teamId, dmId) {
   try {
     await updateTab('ChatReads', rows => {
       const now = new Date().toISOString();
-      const row = rows.find(r => r.userId === userId && r.teamId === teamId);
+      const row = rows.find(r => r.userId === userId && (dmId ? r.dmId === dmId : r.teamId === teamId));
       if (row) row.lastReadAt = now;
-      else rows.push({ id: genId('cr'), userId, teamId, lastReadAt: now });
+      else rows.push({ id: genId('cr'), userId, teamId: teamId || '', dmId: dmId || '', lastReadAt: now });
       return rows;
     });
     invalidateChatReadsCache();
@@ -916,18 +998,24 @@ app.get('/api/state', requireAuth, async (req, res) => {
       }
     }
 
-    // Chat unread badge — how many messages across every channel this user
-    // can see are newer than their own last-read bookmark for that channel
-    // (see ChatReads in lib/sheets.js). Both reads here are cached, so this
-    // costs nothing extra on top of the existing per-poll Sheets traffic.
+    // Chat unread badge — how many messages across every team channel and
+    // DM thread this user is part of are newer than their own last-read
+    // bookmark for that channel (see ChatReads in lib/sheets.js). All reads
+    // here are cached, so this costs nothing extra on top of the existing
+    // per-poll Sheets traffic.
     const chatTeamIds = allowedChatTeamIds(req.user, teamsAll);
     let chatUnreadTotal = 0;
-    if (chatTeamIds.length) {
+    if (!req.user.isViewer) {
       const myChatId = req.user.id || 'owner';
       const [messagesAll, chatReadsAll] = await Promise.all([getMessagesCached(), getChatReadsCached()]);
       chatTeamIds.forEach(tid => {
         const lastReadAt = (chatReadsAll.find(r => r.userId === myChatId && r.teamId === tid) || {}).lastReadAt || '';
         chatUnreadTotal += messagesAll.filter(m => m.teamId === tid && m.senderId !== myChatId && m.createdAt > lastReadAt).length;
+      });
+      const myDmIds = Array.from(new Set(messagesAll.filter(m => m.dmId && dmParticipants(m.dmId).includes(myChatId)).map(m => m.dmId)));
+      myDmIds.forEach(did => {
+        const lastReadAt = (chatReadsAll.find(r => r.userId === myChatId && r.dmId === did) || {}).lastReadAt || '';
+        chatUnreadTotal += messagesAll.filter(m => m.dmId === did && m.senderId !== myChatId && m.createdAt > lastReadAt).length;
       });
     }
 
@@ -1022,6 +1110,7 @@ app.post('/api/members', requireAuth, requireOwner, async (req, res) => {
       rows.push(newMember);
       return rows;
     });
+    invalidateMembersCache();
     const { passwordHash, ...safe } = newMember;
     res.json(safe);
   } catch (e) { sendErr(res, e); }
@@ -1048,6 +1137,7 @@ app.put('/api/members/:id', requireAuth, requireOwner, async (req, res) => {
       updated = m;
       return rows;
     });
+    invalidateMembersCache();
     const { passwordHash, ...safe } = updated;
     res.json(safe);
   } catch (e) { sendErr(res, e); }
@@ -1057,6 +1147,7 @@ app.delete('/api/members/:id', requireAuth, requireOwner, async (req, res) => {
   try {
     await updateTab('Members', rows => rows.filter(r => r.id !== req.params.id));
     await updateTab('Tasks', rows => { rows.forEach(t => { if (t.assignee === req.params.id) t.assignee = ''; }); return rows; });
+    invalidateMembersCache();
     res.json({ ok: true });
   } catch (e) { sendErr(res, e); }
 });
