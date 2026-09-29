@@ -2977,7 +2977,7 @@
 
   function renderLogView(){
     const el = document.getElementById('logView');
-    el.innerHTML = renderLogTable() + renderProductivitySection();
+    el.innerHTML = renderProductivitySection() + renderLogTable();
     wireLogInteractions();
   }
 
