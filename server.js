@@ -9,6 +9,7 @@ const { sign, requireAuth, requireLeader, requireOwner, requireAssigner, isLeade
 const { sendMail, taskAssignedEmail } = require('./lib/mailer');
 const scheduler = require('./lib/scheduler');
 const achievements = require('./lib/achievements');
+const dailyReport = require('./lib/dailyReport');
 
 const app = express();
 app.use(cors());
@@ -172,6 +173,9 @@ function canAssignTo(user, assigneeId, membersCache) {
 }
 
 function sendErr(res, e) {
+  // Validation failures that carry their own specific, user-facing wording
+  // (e.g. "Row 5: the date must be inside 2026-10.") — see lib/dailyReport.js.
+  if (e.userMessage) return res.status(400).json({ error: e.userMessage });
   // A write to a tab that doesn't exist yet in the Google Sheet (e.g. someone
   // upgraded the server code but hasn't added the new tab) surfaces as a raw
   // Google API error, not one of our own thrown Error messages — catch that
@@ -505,6 +509,75 @@ app.post('/api/project-targets', requireAuth, requireOwner, async (req, res) => 
       return rows;
     });
     res.json(saved);
+  } catch (e) { sendErr(res, e); }
+});
+
+// ---------- DAILY REPORT (staging area for the monthly tracking workbook) ----------
+// Engineers enter a month's rows here once (see lib/dailyReport.js for what
+// a row is and why the lists look the way they do); the client exports them
+// in the original workbook's column order for pasting into it. Saved as one
+// batch per (engineer, month) rather than row by row — every save is a full
+// tab rewrite, so per-edit saves would burn through the Sheets write quota.
+// Everyone sees/edits their own report; the owner can edit anyone's;
+// owner/viewers/leaders/seniors can read anyone's (viewers read-only).
+const dailyReportsReader = makeCachedReader(() => readTab('DailyReports').catch(() => []), 10000);
+
+function isValidMonth(m) { return /^\d{4}-(0[1-9]|1[0-2])$/.test(m || ''); }
+
+app.get('/api/daily-report', requireAuth, async (req, res) => {
+  try {
+    const month = req.query.month;
+    if (!isValidMonth(month)) throw new Error('BAD_REQUEST');
+    const teamWide = isTeamWide(req.user);
+    const membersAll = teamWide ? await readTab('Members') : [];
+    const selectable = membersAll.filter(m => !m.isViewer).map(m => ({ id: m.id, name: m.name }));
+
+    let wanted = teamWide ? (req.query.memberId || '') : (req.user.id || '');
+    if (teamWide && wanted !== 'all' && wanted && !selectable.some(m => m.id === wanted)) throw new Error('NOT_FOUND');
+
+    const all = await dailyReportsReader.get();
+    const inMonth = all.filter(r => (r.date || '').slice(0, 7) === month);
+    const nameOf = id => (selectable.find(m => m.id === id) || {}).name || '';
+    const rows = !wanted ? [] : inMonth
+      .filter(r => wanted === 'all' || r.memberId === wanted)
+      .map(r => ({ ...r, memberName: nameOf(r.memberId) }));
+
+    res.json({
+      month, memberId: wanted, rows,
+      canEdit: !req.user.isViewer && wanted !== 'all' && !!wanted && (req.user.role === 'owner' || wanted === req.user.id),
+      members: selectable,
+      lists: {
+        statuses: dailyReport.STATUSES, dwgsStatuses: dailyReport.DWGS_STATUSES, packages: dailyReport.PACKAGES,
+        projects: dailyReport.PROJECTS, items: dailyReport.ITEMS, types: dailyReport.TYPES, revNos: dailyReport.REV_NOS,
+        subtypesByType: dailyReport.SUBTYPES_BY_TYPE, valueTable: dailyReport.VALUE_TABLE
+      }
+    });
+  } catch (e) { sendErr(res, e); }
+});
+
+app.put('/api/daily-report', requireAuth, async (req, res) => {
+  try {
+    if (req.user.isViewer) throw new Error('FORBIDDEN');
+    const { month, rows } = req.body;
+    if (!isValidMonth(month) || !Array.isArray(rows)) throw new Error('BAD_REQUEST');
+    if (rows.length > dailyReport.MAX_ROWS_PER_SAVE) {
+      const err = new Error('BAD_REQUEST');
+      err.userMessage = `That's ${rows.length} rows — a single month can hold at most ${dailyReport.MAX_ROWS_PER_SAVE}.`;
+      throw err;
+    }
+    let memberId = req.user.id;
+    if (req.user.role === 'owner') {
+      memberId = req.body.memberId;
+      const membersAll = await readTab('Members');
+      if (!membersAll.some(m => m.id === memberId && !m.isViewer)) throw new Error('NOT_FOUND');
+    }
+    const clean = rows.map((r, i) => dailyReport.normalizeRow(r || {}, month, i + 1));
+    await updateTab('DailyReports', existing => {
+      const others = existing.filter(r => !(r.memberId === memberId && (r.date || '').slice(0, 7) === month));
+      return others.concat(clean.map(r => ({ id: genId('dr'), memberId, ...r })));
+    });
+    dailyReportsReader.invalidate();
+    res.json({ saved: clean.length });
   } catch (e) { sendErr(res, e); }
 });
 
@@ -915,7 +988,7 @@ app.get('/api/leaves', requireAuth, async (req, res) => {
 
 app.get('/api/backup/export', requireAuth, requireOwner, async (req, res) => {
   try {
-    const tabs = ['Teams', 'Members', 'Tasks', 'Notifications', 'Achievements', 'WorkDays', 'ProjectTargets', 'Messages', 'ChatReads', 'ChecklistTemplates', 'Comments', 'Holidays', 'Leaves', 'ProjectScope'];
+    const tabs = ['Teams', 'Members', 'Tasks', 'Notifications', 'Achievements', 'WorkDays', 'ProjectTargets', 'Messages', 'ChatReads', 'DailyReports', 'ChecklistTemplates', 'Comments', 'Holidays', 'Leaves', 'ProjectScope'];
     const data = {};
     for (const tab of tabs) {
       const rows = await readTab(tab).catch(() => []);

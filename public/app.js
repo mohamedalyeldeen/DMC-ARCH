@@ -218,6 +218,7 @@
     clearUndo();
     capacityLoaded = false;
     capacityData = [];
+    drLoadedKey = null; drRows = []; drMemberId = null; drDirty = false; // next login must not see the previous person's report
     closeChatFloat();
     document.getElementById('chatBubbleBtn').style.display = 'none';
     document.getElementById('appShell').style.display = 'none';
@@ -369,6 +370,7 @@
     document.getElementById('logView').style.display='none';
     document.getElementById('prodDashboardView').style.display='none';
     document.getElementById('projectProgressView').style.display='none';
+    document.getElementById('dailyReportView').style.display='none';
     document.getElementById('capacityView').style.display='none';
     document.getElementById('bulkAssignBtn').style.display='none';
     document.getElementById('dueTodayBtn').style.display='none';
@@ -406,6 +408,11 @@
       document.getElementById('projectProgressView').style.display='block';
       document.getElementById('newTaskBtn').style.display='none';
       loadAndRenderProjectProgress();
+    } else if(activeTab==='dailyReport'){
+      document.getElementById('viewTitle').textContent = 'Daily Report';
+      document.getElementById('dailyReportView').style.display='block';
+      document.getElementById('newTaskBtn').style.display='none';
+      renderDailyReportTab();
     } else {
       document.getElementById('viewTitle').textContent = 'Capacity';
       document.getElementById('capacityView').style.display='block';
@@ -513,7 +520,7 @@
     catch(e){ alert(e.message); }
   });
 
-  const ALL_TAB_BTNS = ['tabBoardBtn','tabGanttBtn','tabDashBtn','tabLogBtn','tabProdDashBtn','tabProjectProgressBtn','tabCapacityBtn'];
+  const ALL_TAB_BTNS = ['tabBoardBtn','tabGanttBtn','tabDashBtn','tabLogBtn','tabProdDashBtn','tabProjectProgressBtn','tabDailyReportBtn','tabCapacityBtn'];
   function activateTab(name, btnId){
     activeTab = name;
     ALL_TAB_BTNS.forEach(id=> document.getElementById(id).classList.toggle('active', id===btnId));
@@ -544,6 +551,7 @@
   document.getElementById('tabLogBtn').addEventListener('click', ()=> activateTab('log','tabLogBtn'));
   document.getElementById('tabProdDashBtn').addEventListener('click', ()=> activateTab('proddash','tabProdDashBtn'));
   document.getElementById('tabProjectProgressBtn').addEventListener('click', ()=> activateTab('projectProgress','tabProjectProgressBtn'));
+  document.getElementById('tabDailyReportBtn').addEventListener('click', ()=> activateTab('dailyReport','tabDailyReportBtn'));
   document.getElementById('tabCapacityBtn').addEventListener('click', ()=> activateTab('capacity','tabCapacityBtn'));
 
   function renderStats(){
@@ -2979,6 +2987,427 @@
     const el = document.getElementById('logView');
     el.innerHTML = renderProductivitySection() + renderLogTable();
     wireLogInteractions();
+  }
+
+  // ---------- DAILY REPORT TAB ----------
+  // Staging area for the per-engineer monthly tracking workbook (see
+  // lib/dailyReport.js). Engineers fill a month's rows in here, save once,
+  // and export an .xlsx laid out exactly like the original's "Database"
+  // table to paste into it. Unlike the other tabs this one holds unsaved
+  // edits on screen, so the 8s poll must never rebuild it — see
+  // renderDailyReportTab().
+  let drLists = null;
+  let drMonth = (()=>{ const d=new Date(); return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0'); })();
+  let drMemberId = null;   // whose report is open; null = not decided yet (decided on first render)
+  let drMembers = [];      // who a team-wide viewer can switch between
+  let drRows = [];         // working copy, edited in place
+  let drCanEdit = false;
+  let drDirty = false;
+  let drLoadedKey = null;  // "month|member" currently on screen
+  let drLoading = false;
+  let drRowSeq = 0;
+  const DR_FIELDS = ['date','status','project','area','package','item','type','subtype','revNo','numDwgs','description','notes','normalHours','dwgsStatus'];
+  const DR_HEADERS = ['Date','Day','Weekend','Status','Project','Area / Zone','Package','Item','TYPE','Subtype','REV NO.','VALUE','NO OF DWGS','TOT NO OF DWGS','Task Description','Notes','Normal Hours','Day Fraction','DWGS Status'];
+
+  window.addEventListener('beforeunload', (e)=>{ if(drDirty){ e.preventDefault(); e.returnValue=''; } });
+
+  function escAttr(s){ return escapeHtml(s).replace(/"/g,'&quot;'); }
+  function drTypeLabel(t){ return String(t||'').replace(/\s+/g,' '); } // the stored "CLEAN \nCOPY" has a real line break; show it on one line
+  function drDayName(date){ return date ? parseIsoUTC(date).toLocaleDateString('en-US',{weekday:'long',timeZone:'UTC'}) : ''; }
+  function drIsWeekendName(day){ return day==='Friday' || day==='Saturday'; } // same rule as the original's Weekend column
+  function drValue(r){
+    if(!drLists) return '';
+    const row = drLists.valueTable.find(x=>x[0]===r.type && x[1]===r.subtype);
+    const i = drLists.revNos.indexOf(r.revNo);
+    return row && i>=0 ? row[2][i] : '';
+  }
+  // Mirrors the original: =IF(status="on progress",0,IFERROR(NO OF DWGS*VALUE,""))
+  function drTot(r){
+    if(r.dwgsStatus==='on progress') return 0;
+    const v = drValue(r);
+    if(v==='') return '';
+    const n = (r.numDwgs===''||r.numDwgs==null) ? 0 : Number(r.numDwgs);
+    return Math.round(n*v*1000)/1000;
+  }
+  function drFraction(r){ return (r.normalHours===''||r.normalHours==null) ? '' : Math.round(Number(r.normalHours)/8*1000)/1000; }
+  function drMonthEnd(){ const [y,m]=drMonth.split('-').map(Number); return drMonth+'-'+String(new Date(Date.UTC(y,m,0)).getUTCDate()).padStart(2,'0'); }
+  function drBlankRow(over){
+    return Object.assign({_k:++drRowSeq, date:'', status:'At work', project:'', area:'', package:'', item:'', type:'', subtype:'', revNo:'', numDwgs:'', description:'', notes:'', normalHours:'', dwgsStatus:''}, over||{});
+  }
+  // Stable by date: rows entered for the same day keep the order they were typed in.
+  function drSorted(rows){
+    return rows.map((r,i)=>[r,i]).sort((a,b)=> a[0].date<b[0].date ? -1 : a[0].date>b[0].date ? 1 : a[1]-b[1]).map(x=>x[0]);
+  }
+
+  function renderDailyReportTab(){
+    if(drMemberId===null) drMemberId = (!isOwner() && !isViewer()) ? session.id : '';
+    if(drLoading) return;
+    if(drLoadedKey === drMonth+'|'+drMemberId) return; // already on screen — never rebuild over unsaved edits
+    loadDailyReport();
+  }
+
+  async function loadDailyReport(){
+    const el = document.getElementById('dailyReportView');
+    drLoading = true;
+    if(!drLoadedKey) el.innerHTML = '<div class="notif-empty">Loading…</div>';
+    try{
+      const data = await api('GET', '/api/daily-report?month='+encodeURIComponent(drMonth)+'&memberId='+encodeURIComponent(drMemberId||''));
+      drLists = data.lists;
+      drMembers = data.members || [];
+      drCanEdit = !!data.canEdit;
+      if(!drMemberId && drMembers.length){ // owner/viewer: no report of their own, start on the first engineer
+        drMemberId = drMembers[0].id;
+        return await loadDailyReport(); // awaited so the finally below can't clear drLoading while this is still in flight
+      }
+      drRows = (data.rows||[]).map(r=>Object.assign({}, r, {_k:++drRowSeq}));
+      drDirty = false;
+      drLoadedKey = drMonth+'|'+drMemberId;
+      renderDailyReport();
+    }catch(e){
+      el.innerHTML = `<div class="dash-card"><div class="notif-empty">${escapeHtml(e.message)}</div></div>`;
+    }finally{ drLoading = false; }
+  }
+
+  function drSelectHtml(field, options, current, labelFn){
+    const opts = options.map(o=>`<option value="${escAttr(o)}" ${o===current?'selected':''}>${escapeHtml(labelFn?labelFn(o):o)}</option>`).join('');
+    return `<select data-f="${field}" ${drCanEdit?'':'disabled'}><option value=""></option>${opts}</select>`;
+  }
+  function drSubtypeOptions(type){
+    if(type) return drLists.subtypesByType[type] || [];
+    return Array.from(new Set([].concat(...Object.values(drLists.subtypesByType)))); // no TYPE yet: offer every subtype
+  }
+
+  function drRowHtml(r){
+    const dis = drCanEdit ? '' : 'disabled';
+    const day = drDayName(r.date);
+    const weekend = drIsWeekendName(day) ? 'Weekend' : '';
+    const val = drValue(r), tot = drTot(r), frac = drFraction(r);
+    return `
+      <tr data-k="${r._k}" class="${weekend?'dr-row-weekend':''}">
+        <td><input type="date" data-f="date" value="${escAttr(r.date)}" min="${drMonth}-01" max="${drMonthEnd()}" ${dis}></td>
+        <td class="dr-calc" data-c="day">${day}</td>
+        <td class="dr-calc" data-c="weekend">${weekend}</td>
+        <td>${drSelectHtml('status', drLists.statuses, r.status)}</td>
+        <td><input type="text" list="drProjects" data-f="project" value="${escAttr(r.project)}" ${dis}></td>
+        <td><input type="text" data-f="area" value="${escAttr(r.area)}" ${dis}></td>
+        <td><input type="text" list="drPackages" data-f="package" value="${escAttr(r.package)}" ${dis}></td>
+        <td><input type="text" list="drItems" data-f="item" value="${escAttr(r.item)}" ${dis}></td>
+        <td>${drSelectHtml('type', drLists.types, r.type, drTypeLabel)}</td>
+        <td>${drSelectHtml('subtype', drSubtypeOptions(r.type), r.subtype)}</td>
+        <td>${drSelectHtml('revNo', drLists.revNos, r.revNo)}</td>
+        <td class="dr-calc" data-c="value">${val}</td>
+        <td><input type="number" min="0" step="any" data-f="numDwgs" value="${escAttr(r.numDwgs)}" ${dis}></td>
+        <td class="dr-calc" data-c="tot">${tot}</td>
+        <td><input type="text" data-f="description" value="${escAttr(r.description)}" ${dis}></td>
+        <td><input type="text" data-f="notes" value="${escAttr(r.notes)}" ${dis}></td>
+        <td><input type="number" min="0" max="24" step="any" data-f="normalHours" value="${escAttr(r.normalHours)}" ${dis}></td>
+        <td class="dr-calc" data-c="frac">${frac}</td>
+        <td>${drSelectHtml('dwgsStatus', drLists.dwgsStatuses, r.dwgsStatus)}</td>
+        <td class="dr-actions">${drCanEdit ? `<button type="button" class="dr-row-btn" data-act="dup" title="Duplicate this row">⧉</button><button type="button" class="dr-row-btn" data-act="del" title="Delete this row">✕</button>` : ''}</td>
+      </tr>`;
+  }
+
+  function drSummaryHtml(){
+    const firstStatusByDate = {};
+    drRows.forEach(r=>{ if(r.date && !(r.date in firstStatusByDate)) firstStatusByDate[r.date] = r.status; });
+    const counts = {};
+    Object.values(firstStatusByDate).forEach(s=>{ counts[s] = (counts[s]||0)+1; });
+    const totalDwgs = drRows.reduce((s,r)=> s + (Number(r.numDwgs)||0), 0);
+    const totalWeighted = Math.round(drRows.reduce((s,r)=> s + (Number(drTot(r))||0), 0)*1000)/1000;
+    const hours = drRows.reduce((s,r)=> s + (Number(r.normalHours)||0), 0);
+    const chips = Object.keys(counts).map(s=>`<span class="dr-chip"><b>${counts[s]}</b> ${escapeHtml(s)}</span>`);
+    chips.push(`<span class="dr-chip"><b>${totalDwgs}</b> NO OF DWGS</span>`);
+    chips.push(`<span class="dr-chip"><b>${totalWeighted}</b> TOT NO OF DWGS</span>`);
+    chips.push(`<span class="dr-chip"><b>${Math.round(hours*100)/100}</b> hours</span>`);
+    return chips.join('');
+  }
+
+  function drListsHtml(){
+    const dl = (id, arr)=> `<datalist id="${id}">${arr.map(v=>`<option value="${escAttr(v)}"></option>`).join('')}</datalist>`;
+    return dl('drProjects', drLists.projects) + dl('drPackages', drLists.packages) + dl('drItems', drLists.items);
+  }
+
+  function renderDailyReport(){
+    const el = document.getElementById('dailyReportView');
+    const memberPicker = drMembers.length ? `
+      <select id="drMemberSel">${drMembers.map(m=>`<option value="${m.id}" ${m.id===drMemberId?'selected':''}>${escapeHtml(m.name)}</option>`).join('')}</select>
+    ` : '';
+    const editButtons = drCanEdit ? `
+      <button type="button" class="ghost-btn" id="drAddBtn">+ Add row</button>
+      <button type="button" class="ghost-btn" id="drFillBtn" title="Adds one row for every day of the month that doesn't have one yet (Fri/Sat and public holidays as Weekend)">+ Fill month days</button>
+      <button type="button" class="primary-btn" id="drSaveBtn">Save</button>
+    ` : '';
+    const allBtn = isLeaderLike() ? `<button type="button" class="ghost-btn" id="drExportAllBtn">⬇ Export all engineers</button>` : '';
+    el.innerHTML = `
+      ${drListsHtml()}
+      <div class="dash-card">
+        <div class="dr-toolbar">
+          <h3 style="margin:0;">Daily Report</h3>
+          <div class="dr-controls">
+            <input type="month" id="drMonthInput" value="${drMonth}">
+            ${memberPicker}
+            ${editButtons}
+            <button type="button" class="ghost-btn" id="drExportBtn">⬇ Export Excel</button>
+            ${allBtn}
+          </div>
+        </div>
+        <div class="dr-hint">
+          Enter each day's tasks, then press <b>Save</b> once. At the end of the month, <b>Export Excel</b> and paste into your original sheet:
+          copy the data cells from the exported <i>Database</i> sheet, then in the original use <b>Paste Special → Skip blanks</b> on the first empty row
+          (the Day / Weekend / VALUE / TOT / Day Fraction columns are left empty on purpose so your formulas stay intact).
+          <span id="drDirtyNote" class="dr-unsaved" style="display:none;">&nbsp;● Unsaved changes</span>
+        </div>
+        <div class="dr-summary" id="drSummary">${drSummaryHtml()}</div>
+        <div class="dr-table-wrap">
+          <table class="dr-table">
+            <thead><tr>
+              <th style="min-width:128px;">Date</th><th style="min-width:84px;">Day</th><th style="min-width:84px;">Weekend</th><th style="min-width:116px;">Status</th>
+              <th style="min-width:210px;">Project</th><th style="min-width:150px;">Area / Zone</th><th style="min-width:110px;">Package</th><th style="min-width:180px;">Item</th>
+              <th style="min-width:140px;">TYPE</th><th style="min-width:96px;">Subtype</th><th style="min-width:116px;">REV NO.</th><th style="min-width:64px;">VALUE</th>
+              <th style="min-width:96px;">NO OF DWGS</th><th style="min-width:96px;">TOT NO OF DWGS</th><th style="min-width:280px;">Task Description</th><th style="min-width:170px;">Notes</th>
+              <th style="min-width:96px;">Normal Hours</th><th style="min-width:84px;">Day Fraction</th><th style="min-width:116px;">DWGS Status</th><th style="min-width:70px;"></th>
+            </tr></thead>
+            <tbody id="drBody">${drRows.map(drRowHtml).join('')}</tbody>
+          </table>
+          ${drRows.length ? '' : '<div class="notif-empty">No rows for this month yet.</div>'}
+        </div>
+      </div>
+    `;
+    drShowDirty();
+    wireDailyReport();
+  }
+
+  function drShowDirty(){
+    const n = document.getElementById('drDirtyNote');
+    if(n) n.style.display = drDirty ? 'inline' : 'none';
+  }
+  function drMarkDirty(){ drDirty = true; drShowDirty(); }
+  function drRefreshSummary(){ const s = document.getElementById('drSummary'); if(s) s.innerHTML = drSummaryHtml(); }
+
+  // Map whatever the browser hands back for a <select> to the canonical list
+  // entry — compared with whitespace collapsed so the "CLEAN \nCOPY" line
+  // break can't make a valid pick look unknown.
+  function drCanonical(list, raw){
+    return list.find(o=>o===raw) || list.find(o=>drTypeLabel(o)===drTypeLabel(raw)) || '';
+  }
+
+  function drUpdateDerived(tr, r){
+    const day = drDayName(r.date);
+    const weekend = drIsWeekendName(day) ? 'Weekend' : '';
+    tr.classList.toggle('dr-row-weekend', !!weekend);
+    const set = (c, v)=>{ const cell = tr.querySelector(`[data-c="${c}"]`); if(cell) cell.textContent = v; };
+    set('day', day); set('weekend', weekend); set('value', drValue(r)); set('tot', drTot(r)); set('frac', drFraction(r));
+  }
+
+  function wireDailyReport(){
+    document.getElementById('drMonthInput').addEventListener('change', (e)=>{
+      if(!e.target.value) return;
+      if(drDirty && !confirm('You have unsaved changes. Discard them and switch month?')){ e.target.value = drMonth; return; }
+      drMonth = e.target.value; drLoadedKey = null; drDirty = false; loadDailyReport();
+    });
+    const sel = document.getElementById('drMemberSel');
+    if(sel) sel.addEventListener('change', ()=>{
+      if(drDirty && !confirm('You have unsaved changes. Discard them and switch engineer?')){ sel.value = drMemberId; return; }
+      drMemberId = sel.value; drLoadedKey = null; drDirty = false; loadDailyReport();
+    });
+    document.getElementById('drExportBtn').addEventListener('click', ()=> exportDailyReport(false));
+    const allBtn = document.getElementById('drExportAllBtn');
+    if(allBtn) allBtn.addEventListener('click', ()=> exportDailyReport(true));
+
+    const addBtn = document.getElementById('drAddBtn');
+    if(addBtn) addBtn.addEventListener('click', ()=>{
+      const last = drRows[drRows.length-1];
+      const date = last && last.date ? last.date : (todayStr().slice(0,7)===drMonth ? todayStr() : drMonth+'-01');
+      const row = drBlankRow({date});
+      if(last && last.status==='At work'){ row.project = last.project; row.area = last.area; row.package = last.package; } // consecutive entries are usually the same project
+      drRows.push(row);
+      drMarkDirty(); drRerenderBody();
+    });
+    const fillBtn = document.getElementById('drFillBtn');
+    if(fillBtn) fillBtn.addEventListener('click', drFillMonth);
+    const saveBtn = document.getElementById('drSaveBtn');
+    if(saveBtn) saveBtn.addEventListener('click', saveDailyReport);
+
+    const body = document.getElementById('drBody');
+    const rowOf = (el)=>{ const tr = el.closest('tr'); return tr ? drRows.find(r=>String(r._k)===tr.dataset.k) : null; };
+    // Typing updates the model and the derived cells in place — a full
+    // re-render on every keystroke would drop focus mid-word.
+    body.addEventListener('input', (e)=>{
+      const f = e.target.dataset.f; const r = rowOf(e.target);
+      if(!f || !r || e.target.tagName==='SELECT') return;
+      r[f] = e.target.value;
+      drMarkDirty(); drUpdateDerived(e.target.closest('tr'), r); drRefreshSummary();
+    });
+    body.addEventListener('change', (e)=>{
+      const f = e.target.dataset.f; const r = rowOf(e.target);
+      if(!f || !r || e.target.tagName!=='SELECT') return;
+      const lists = { status: drLists.statuses, type: drLists.types, subtype: drSubtypeOptions(r.type), revNo: drLists.revNos, dwgsStatus: drLists.dwgsStatuses };
+      r[f] = drCanonical(lists[f], e.target.value);
+      if(f==='type' && r.subtype && !drSubtypeOptions(r.type).includes(r.subtype)) r.subtype = '';
+      drMarkDirty();
+      const tr = e.target.closest('tr');
+      if(f==='type'){ // the Subtype dropdown's options depend on TYPE, so rebuild this row
+        const tmp = document.createElement('tbody'); tmp.innerHTML = drRowHtml(r);
+        tr.replaceWith(tmp.firstElementChild);
+      } else drUpdateDerived(tr, r);
+      drRefreshSummary();
+    });
+    body.addEventListener('click', (e)=>{
+      const btn = e.target.closest('[data-act]'); if(!btn) return;
+      const r = rowOf(btn); if(!r) return;
+      const idx = drRows.indexOf(r);
+      if(btn.dataset.act==='del'){ drRows.splice(idx,1); }
+      else if(btn.dataset.act==='dup'){ drRows.splice(idx+1, 0, Object.assign({}, r, {_k:++drRowSeq})); }
+      drMarkDirty(); drRerenderBody();
+    });
+  }
+
+  function drRerenderBody(){
+    document.getElementById('drBody').innerHTML = drRows.map(drRowHtml).join('');
+    drRefreshSummary();
+  }
+
+  function drFillMonth(){
+    const ans = prompt('Normal hours to prefill on working days (leave empty to skip):', '');
+    if(ans===null) return;
+    const hours = ans.trim()==='' ? '' : Number(ans);
+    if(hours!=='' && (!isFinite(hours) || hours<0 || hours>24)){ alert('Enter a number between 0 and 24.'); return; }
+    const [y,m] = drMonth.split('-').map(Number);
+    const daysInMonth = new Date(Date.UTC(y,m,0)).getUTCDate();
+    const have = new Set(drRows.map(r=>r.date));
+    const holidays = new Set((state.taxonomy && state.taxonomy.holidays) || []);
+    let added = 0;
+    for(let d=1; d<=daysInMonth; d++){
+      const date = drMonth+'-'+String(d).padStart(2,'0');
+      if(have.has(date)) continue;
+      const off = drIsWeekendName(drDayName(date)) || holidays.has(date);
+      drRows.push(drBlankRow({date, status: off?'Weekend':'At work', normalHours: off?'':hours}));
+      added++;
+    }
+    if(!added){ alert('Every day of this month already has a row.'); return; }
+    drRows = drSorted(drRows);
+    drMarkDirty(); drRerenderBody();
+  }
+
+  async function saveDailyReport(){
+    const btn = document.getElementById('drSaveBtn');
+    btn.disabled = true;
+    try{
+      const rows = drSorted(drRows).map(r=>{ const o = {}; DR_FIELDS.forEach(f=>{ o[f] = r[f]; }); return o; });
+      await api('PUT', '/api/daily-report', {month: drMonth, memberId: drMemberId, rows});
+      drDirty = false; drLoadedKey = null;
+      await loadDailyReport();
+    }catch(e){ alert(e.message); btn.disabled = false; }
+  }
+
+  // ---- export ----
+  // The calculated columns (Day, Weekend, VALUE, TOT NO OF DWGS, Day
+  // Fraction) are exported EMPTY on purpose: in the original they're
+  // formulas, and pasting values over them would silently turn them into
+  // fixed numbers. "Paste Special → Skip blanks" leaves them untouched.
+  function drExportRow(r){
+    return [
+      r.date ? parseIsoUTC(r.date) : '', '', '', r.status||'', r.project||'', r.area||'', r.package||'', r.item||'',
+      r.type||'', r.subtype||'', r.revNo||'', '', (r.numDwgs===''||r.numDwgs==null) ? '' : Number(r.numDwgs), '',
+      r.description||'', r.notes||'', (r.normalHours===''||r.normalHours==null) ? '' : Number(r.normalHours), '', r.dwgsStatus||''
+    ];
+  }
+
+  function loadExcelJs(){
+    if(window.ExcelJS) return Promise.resolve(window.ExcelJS);
+    const urls = ['https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.4.0/exceljs.min.js', 'https://cdn.jsdelivr.net/npm/exceljs@4.4.0/dist/exceljs.min.js'];
+    return urls.reduce((p,u)=> p.catch(()=> new Promise((resolve,reject)=>{
+      const s = document.createElement('script');
+      s.src = u;
+      s.onload = ()=> window.ExcelJS ? resolve(window.ExcelJS) : reject(new Error('ExcelJS missing'));
+      s.onerror = ()=> reject(new Error('could not load '+u));
+      document.head.appendChild(s);
+    })), Promise.reject(new Error('start')));
+  }
+
+  function drAddSheet(wb, name, rows){
+    let title = (name||'Database').replace(/[\[\]:*?\/\\]/g,' ').trim().slice(0,31) || 'Sheet';
+    let n = 2;
+    while(wb.getWorksheet(title)) title = title.slice(0,28)+' '+(n++);
+    const ws = wb.addWorksheet(title);
+    ws.addRow(DR_HEADERS);
+    rows.forEach(r=> ws.addRow(drExportRow(r)));
+    const head = ws.getRow(1);
+    head.font = {bold:true, color:{argb:'FF161616'}};
+    head.eachCell(c=>{ c.fill = {type:'pattern', pattern:'solid', fgColor:{argb:'FFC6E0B4'}}; c.alignment = {vertical:'middle', wrapText:true}; });
+    [12,11,10,12,34,18,12,26,16,11,12,8,12,14,40,22,12,11,13].forEach((w,i)=>{ ws.getColumn(i+1).width = w; });
+    for(let i=2; i<=ws.rowCount; i++) ws.getCell(i,1).numFmt = '[$-409]d-mmm-yy;@';
+    ws.views = [{state:'frozen', ySplit:1}];
+    ws.autoFilter = {from:{row:1,column:1}, to:{row:1,column:DR_HEADERS.length}};
+  }
+
+  function drAddReadme(wb, who){
+    const ws = wb.addWorksheet('README');
+    ws.getColumn(1).width = 110;
+    [
+      `Generated by Click — Daily Report — ${who} — ${drMonth}`,
+      '',
+      'HOW TO PASTE INTO THE ORIGINAL SHEET',
+      '1. Select the data cells on the "Database" sheet here (A2 down to the last row, all columns) and copy.',
+      '2. In the original workbook, click the first empty row of the Database table.',
+      '3. Home → Paste → Paste Special… → tick "Skip blanks" → OK.',
+      '',
+      'Why: the columns Day, Weekend, VALUE, TOT NO OF DWGS and Day Fraction are formulas in the original, so they are exported empty on purpose.',
+      '"Skip blanks" keeps your formulas instead of overwriting them with empty cells.',
+      '',
+      'طريقة اللصق: انسخ الصفوف من تاب Database هنا ← في الشيت الأصلي اضغط أول صف فاضي في الجدول ← Paste Special ← Skip blanks.',
+      'أعمدة Day / Weekend / VALUE / TOT NO OF DWGS / Day Fraction سايبينها فاضية عمدًا عشان الفورمولا اللي في الشيت الأصلي متتمسحش.'
+    ].forEach(t=> ws.addRow([t]));
+    ws.getRow(1).font = {bold:true};
+    ws.getRow(3).font = {bold:true};
+  }
+
+  function downloadBlobFile(blob, filename){
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = filename;
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }
+
+  async function exportDailyReport(all){
+    const btn = document.getElementById(all ? 'drExportAllBtn' : 'drExportBtn');
+    const label = btn.textContent;
+    btn.disabled = true; btn.textContent = 'Preparing…';
+    try{
+      let groups; // [{name, rows}]
+      if(all){
+        const data = await api('GET', '/api/daily-report?month='+encodeURIComponent(drMonth)+'&memberId=all');
+        const byMember = {};
+        (data.rows||[]).forEach(r=>{ (byMember[r.memberId] = byMember[r.memberId] || {name:r.memberName||'Engineer', rows:[]}).rows.push(r); });
+        groups = Object.values(byMember).map(g=>({name:g.name, rows:drSorted(g.rows)})).sort((a,b)=>a.name.localeCompare(b.name));
+        if(!groups.length){ alert('Nobody has saved any rows for '+drMonth+' yet.'); return; }
+      } else {
+        if(!drRows.length){ alert('There are no rows to export for '+drMonth+'.'); return; }
+        const m = drMembers.find(x=>x.id===drMemberId);
+        groups = [{name: (m && m.name) || (session && session.name) || 'Engineer', rows: drSorted(drRows)}];
+      }
+      const fileName = all ? `Daily Report - All engineers - ${drMonth}` : `Daily Report - ${groups[0].name} - ${drMonth}`;
+      try{
+        const ExcelJS = await loadExcelJs();
+        const wb = new ExcelJS.Workbook();
+        groups.forEach(g=> drAddSheet(wb, all ? g.name : 'Database', g.rows));
+        drAddReadme(wb, all ? 'All engineers' : groups[0].name);
+        const buf = await wb.xlsx.writeBuffer();
+        downloadBlobFile(new Blob([buf], {type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'}), fileName+'.xlsx');
+      }catch(libErr){
+        // Couldn't load the spreadsheet library (blocked CDN, offline): a
+        // CSV opens in Excel and pastes exactly the same way.
+        const lines = [DR_HEADERS].concat(...groups.map(g=> g.rows.map(r=>{
+          const row = drExportRow(r); if(r.date) row[0] = r.date; return all ? row.concat([g.name]) : row;
+        })));
+        if(all) lines[0] = DR_HEADERS.concat(['Engineer']);
+        const csv = '﻿' + lines.map(row=> row.map(csvEscape).join(',')).join('\r\n');
+        downloadBlobFile(new Blob([csv], {type:'text/csv;charset=utf-8;'}), fileName+'.csv');
+        alert('The Excel library could not be loaded, so a CSV was downloaded instead — it opens in Excel and pastes the same way.');
+      }
+    }catch(e){ alert(e.message); }
+    finally{ btn.disabled = false; btn.textContent = label; }
   }
 
   // ---------- CHAT (floating widget — team channels + direct messages) ----------
