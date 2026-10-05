@@ -480,3 +480,88 @@ input.date-invalid{border-color:var(--rust) !important;}
 .dr-table td.dr-actions{position:sticky;left:0;z-index:1;background:var(--ink-2);text-align:left;padding-left:6px;}
 .dr-table th.dr-actions-th{left:0;z-index:3;}
 .dr-row-btn{margin-left:0;margin-right:3px;}
+
+/* ───────────────────────── Motion ─────────────────────────
+   Entrance animations hang off .view-enter, which app.js puts on a view for
+   ~1.3s after a tab switch / first load (see playViewEnter). They're NOT
+   attached to the elements themselves on purpose: the board and dashboards
+   are rebuilt on every ~8s poll, so animating the elements directly would
+   replay the whole entrance (and flicker) every few seconds.
+   Container animations are opacity-only — a transform on a view would turn
+   it into the containing block for anything position:fixed inside it. */
+:root{--ease-out:cubic-bezier(.22,.8,.3,1);}
+
+@keyframes viewIn{from{opacity:0}to{opacity:1}}
+@keyframes cardIn{from{opacity:0;transform:translateY(10px) scale(.985)}to{opacity:1;transform:none}}
+@keyframes popIn{from{opacity:0;transform:scale(.94) translateY(6px)}to{opacity:1;transform:none}}
+@keyframes fadeIn{from{opacity:0}to{opacity:1}}
+@keyframes growX{from{transform:scaleX(0)}to{transform:scaleX(1)}}
+@keyframes growY{from{transform:scaleY(0)}to{transform:scaleY(1)}}
+@keyframes badgePop{0%{transform:scale(1)}35%{transform:scale(1.55)}70%{transform:scale(.9)}100%{transform:scale(1)}}
+@keyframes msgIn{from{opacity:0;transform:translateY(6px) scale(.97)}to{opacity:1;transform:none}}
+@keyframes shimmer{from{background-position:100% 50%}to{background-position:0 50%}}
+
+/* Entering a view */
+.view-enter{animation:viewIn .28s ease-out both;}
+.view-enter .column,.view-enter .ticket,.view-enter .dash-card,.view-enter .prog-card,.view-enter .prod-card,
+.view-enter .capacity-row,.view-enter .dash-stat,.view-enter .pbar-row{animation:cardIn .4s var(--ease-out) both;}
+.view-enter .column:nth-child(2){animation-delay:.06s}
+.view-enter .column:nth-child(3){animation-delay:.12s}
+.view-enter .column:nth-child(4){animation-delay:.18s}
+.view-enter .cards .ticket:nth-child(1){animation-delay:.10s}
+.view-enter .cards .ticket:nth-child(2){animation-delay:.14s}
+.view-enter .cards .ticket:nth-child(3){animation-delay:.18s}
+.view-enter .cards .ticket:nth-child(4){animation-delay:.22s}
+.view-enter .cards .ticket:nth-child(5){animation-delay:.26s}
+.view-enter .cards .ticket:nth-child(6){animation-delay:.30s}
+.view-enter .cards .ticket:nth-child(n+7){animation-delay:.34s}
+.view-enter .dash-card:nth-child(2),.view-enter .prog-card:nth-child(2),.view-enter .prod-card:nth-child(2),.view-enter .dash-stat:nth-child(2){animation-delay:.06s}
+.view-enter .dash-card:nth-child(3),.view-enter .prog-card:nth-child(3),.view-enter .prod-card:nth-child(3),.view-enter .dash-stat:nth-child(3){animation-delay:.12s}
+.view-enter .dash-card:nth-child(4),.view-enter .prog-card:nth-child(4),.view-enter .prod-card:nth-child(4),.view-enter .dash-stat:nth-child(4){animation-delay:.18s}
+.view-enter .dash-card:nth-child(n+5),.view-enter .prog-card:nth-child(n+5),.view-enter .prod-card:nth-child(n+5){animation-delay:.24s}
+.view-enter .bar-fill{transform-origin:left center;animation:growX .8s var(--ease-out) .15s both;}
+.view-enter .column-bar{transform-origin:center bottom;animation:growY .7s var(--ease-out) .15s both;}
+.view-enter .gantt-bar{transform-origin:left center;animation:growX .5s var(--ease-out) .1s both;}
+.view-enter .donut{animation:popIn .6s var(--ease-out) .1s both;}
+
+/* Hover lift */
+.ticket{transition:transform .18s var(--ease-out),box-shadow .18s;}
+.ticket:hover{transform:translateY(-2px);}
+.ticket.dragging{transform:none;}
+.prog-card,.prod-card,.dash-stat{transition:transform .18s var(--ease-out),border-color .18s;}
+.prog-card:hover,.prod-card:hover,.dash-stat:hover{transform:translateY(-2px);border-color:rgba(226,137,43,.45);}
+.team-head,.member-row,.chat-dm-item,.notif-row{transition:background-color .15s;}
+.chat-bubble-btn{transition:transform .18s var(--ease-out),box-shadow .18s;}
+.chat-bubble-btn:hover{transform:scale(1.08);box-shadow:0 6px 18px rgba(0,0,0,.32);}
+
+/* Buttons: smooth colour changes and a small press */
+.primary-btn,.mini-btn,.ghost-btn,.tk-btn,.tab-btn,.icon-btn,.full-btn,.chat-send-btn,.chat-channel-btn,.gantt-toggle-btn,
+.celebration-continue,.dr-row-btn,.chat-type-tab{transition:background-color .15s,border-color .15s,color .15s,transform .12s var(--ease-out),box-shadow .15s;}
+.primary-btn:active:not(:disabled),.mini-btn:active:not(:disabled),.ghost-btn:active:not(:disabled),.tk-btn:active:not(:disabled),
+.tab-btn:active,.icon-btn:active,.full-btn:active,.chat-send-btn:active:not(:disabled),.chat-channel-btn:active,
+.gantt-toggle-btn:active,.celebration-continue:active,.dr-row-btn:active{transform:scale(.96);}
+.primary-btn:hover:not(:disabled){box-shadow:0 4px 14px rgba(226,137,43,.28);}
+.tab-btn:hover{border-color:var(--amber);color:var(--paper);}
+
+/* Popups, panels, the app itself */
+.modal-overlay.open{animation:fadeIn .2s ease-out;}
+.modal-overlay.open .modal,.modal-overlay.open .auth-card{animation:popIn .26s var(--ease-out);}
+.chat-float-panel{animation:popIn .24s var(--ease-out);}
+.chat-bubble-btn{animation:popIn .3s var(--ease-out);}
+.cal-popup{animation:popIn .18s var(--ease-out);}
+.app{animation:fadeIn .4s ease-out;}
+.badge-pop{animation:badgePop .5s var(--ease-out);}
+.chat-msg-new{animation:msgIn .28s var(--ease-out);}
+
+/* Loading placeholder (replaces the bare "Loading…" text) */
+.skeleton{display:flex;flex-direction:column;gap:12px;padding:8px 2px;}
+.skeleton i{display:block;height:16px;border-radius:5px;background:linear-gradient(90deg,var(--ink-2) 25%,var(--ink-3) 37%,var(--ink-2) 63%);background-size:400% 100%;animation:shimmer 1.4s ease infinite;}
+.skeleton i:nth-child(1){width:34%;height:20px;}
+.skeleton i:nth-child(2){width:100%;}
+.skeleton i:nth-child(3){width:86%;}
+.skeleton i:nth-child(4){width:64%;}
+
+/* Anyone who asks their OS to reduce motion gets none of the above. */
+@media (prefers-reduced-motion: reduce){
+  *,*::before,*::after{animation-duration:.01ms !important;animation-iteration-count:1 !important;animation-delay:0ms !important;transition-duration:.01ms !important;scroll-behavior:auto !important;}
+}

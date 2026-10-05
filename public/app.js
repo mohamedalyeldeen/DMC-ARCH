@@ -206,6 +206,7 @@
     activeTab = 'board';
     clearUndo();
     await refreshState();
+    playViewEnter();
     pollTimer = setInterval(()=>{ if(!modalOpenFlag) refreshState(); }, 8000);
   }
 
@@ -443,9 +444,12 @@
     }catch(e){ alert(e.message); }
   });
 
+  let lastNotifCount = null, lastChatCount = null; // previous badge counts, so only an INCREASE pulses
   function renderNotifBadge(){
     const count = state.unreadCount || 0;
     const badge = document.getElementById('notifBadge');
+    if(lastNotifCount!==null && count>lastNotifCount) popBadge(badge);
+    lastNotifCount = count;
     if(count > 0){
       badge.textContent = count > 99 ? '99+' : String(count);
       badge.style.display = 'inline-block';
@@ -460,6 +464,8 @@
   function renderChatBadge(){
     const count = state.chatUnreadTotal || 0;
     const badge = document.getElementById('chatUnreadBadge');
+    if(lastChatCount!==null && count>lastChatCount) popBadge(badge);
+    lastChatCount = count;
     if(count > 0){
       badge.textContent = count > 99 ? '99+' : String(count);
       badge.style.display = 'inline-block';
@@ -526,6 +532,75 @@
     ALL_TAB_BTNS.forEach(id=> document.getElementById(id).classList.toggle('active', id===btnId));
     closeSidebarDrawer(); // no-op on desktop; on mobile the sidebar is an overlay, so switching views should hide it
     renderApp();
+    playViewEnter();
+  }
+
+  // ---------- MOTION ----------
+  // Entrance animations are scoped to a short "view-enter" window on the
+  // view that was just opened (tab switch / first load), NOT attached to the
+  // elements themselves: the board and dashboards are rebuilt from scratch
+  // on every ~8s poll, so animating the elements directly would replay the
+  // whole entrance (and flicker) every few seconds. See the Motion section
+  // of styles.css.
+  const VIEW_IDS = ['board','ganttView','dashboardView','logView','prodDashboardView','projectProgressView','dailyReportView','capacityView'];
+  const COUNT_SELECTOR = '.dash-stat .num, .prod-rate, .donut-center-num, .capacity-pct-label';
+  let enterUntil = 0;
+  let enterTimer = null;
+  const prefersReducedMotion = ()=> !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+
+  function playViewEnter(){
+    if(prefersReducedMotion()) return;
+    const views = VIEW_IDS.map(id=>document.getElementById(id)).filter(Boolean);
+    const el = views.find(v=> v.style.display !== 'none');
+    if(!el) return;
+    views.forEach(v=> v.classList.remove('view-enter'));
+    void el.offsetWidth; // restart the animation if this view was entered a moment ago
+    el.classList.add('view-enter');
+    enterUntil = Date.now() + 1500;
+    clearTimeout(enterTimer);
+    enterTimer = setTimeout(()=> el.classList.remove('view-enter'), 1300);
+    countUpWithin(el);
+  }
+
+  // Headline numbers tick up from 0 — only while a view is being entered (the
+  // observer below checks the same window), so poll re-renders just show the
+  // new value instead of re-counting.
+  function countUpEl(el){
+    if(el.dataset.counted) return;
+    const m = (el.textContent||'').trim().match(/^([+\-]?)(\d+(?:\.\d+)?)(%?)$/);
+    if(!m) return;
+    const target = parseFloat(m[2]);
+    if(!isFinite(target) || target===0) return;
+    el.dataset.counted = '1';
+    const decimals = (m[2].split('.')[1]||'').length;
+    const start = performance.now(), dur = 800;
+    el.textContent = m[1] + (0).toFixed(decimals) + m[3];
+    const step = (now)=>{
+      const t = Math.min(1, (now-start)/dur);
+      const eased = 1 - Math.pow(1-t, 3);
+      el.textContent = t<1 ? m[1] + (target*eased).toFixed(decimals) + m[3] : m[1] + m[2] + m[3];
+      if(t<1) requestAnimationFrame(step);
+    };
+    requestAnimationFrame(step);
+  }
+  function countUpWithin(root){ root.querySelectorAll(COUNT_SELECTOR).forEach(countUpEl); }
+  (function watchForLateContent(){
+    // Capacity / Log / Project Progress fill in after a fetch, a moment after
+    // the tab opens — still inside the entrance window, so catch them here.
+    const host = document.querySelector('.board-wrap');
+    if(!host || !window.MutationObserver) return;
+    new MutationObserver(()=>{ if(Date.now() < enterUntil) countUpWithin(host); })
+      .observe(host, {childList:true, subtree:true});
+  })();
+
+  function skeletonHtml(){
+    return '<div class="skeleton" aria-hidden="true"><i></i><i></i><i></i><i></i></div>';
+  }
+  function popBadge(badge){
+    if(prefersReducedMotion()) return;
+    badge.classList.remove('badge-pop');
+    void badge.offsetWidth;
+    badge.classList.add('badge-pop');
   }
 
   // ---------- MOBILE SIDEBAR DRAWER ----------
@@ -2215,7 +2290,7 @@
     // wiping the whole panel back to "Loading…" each time (even though
     // nothing changed) was the visible flicker/glitch here. Subsequent
     // refreshes now update the list quietly in place.
-    if(!capacityLoaded) el.innerHTML = '<div class="notif-empty">Loading…</div>';
+    if(!capacityLoaded) el.innerHTML = skeletonHtml();
     try{
       const data = await api('GET', '/api/capacity');
       capacityData = data.capacity || [];
@@ -2504,7 +2579,7 @@
 
   async function loadAndRenderLog(){
     const el = document.getElementById('logView');
-    if(!logLoaded) el.innerHTML = '<div class="notif-empty">Loading…</div>';
+    if(!logLoaded) el.innerHTML = skeletonHtml();
     try{
       const wd = await api('GET','/api/workdays');
       logWorkdays = wd.workdays || [];
@@ -2800,7 +2875,7 @@
 
   async function loadAndRenderProjectProgress(){
     const el = document.getElementById('projectProgressView');
-    if(!ppLoaded) el.innerHTML = '<div class="notif-empty">Loading…</div>';
+    if(!ppLoaded) el.innerHTML = skeletonHtml();
     try{
       const pt = await api('GET','/api/project-targets');
       ppTargets = pt.targets || [];
@@ -3051,7 +3126,7 @@
   async function loadDailyReport(){
     const el = document.getElementById('dailyReportView');
     drLoading = true;
-    if(!drLoadedKey) el.innerHTML = '<div class="notif-empty">Loading…</div>';
+    if(!drLoadedKey) el.innerHTML = skeletonHtml();
     try{
       const data = await api('GET', '/api/daily-report?month='+encodeURIComponent(drMonth)+'&memberId='+encodeURIComponent(drMemberId||''));
       drLists = data.lists;
@@ -3456,6 +3531,7 @@
   let chatPollTimer = null;
   let chatPanelOpen = false;
   let chatLastSignature = null; // used to skip re-rendering the message list when nothing changed (avoids flicker)
+  let chatCountKey = null, chatCountN = 0; // message count last rendered per channel, to animate only genuinely new ones
 
   function chatChannelOptions(){
     if(isOwner()) return state.teams;
@@ -3734,6 +3810,7 @@
       const wasAtBottom = listEl.scrollTop + listEl.clientHeight >= listEl.scrollHeight - 20;
       const myChatId = session && (session.role==='owner' ? 'owner' : session.id);
       const mentionNames = chatMentionable.map(m=>m.name);
+      const prevCount = chatCountKey===channelKey ? chatCountN : null; // null = first load of this channel: nothing should animate
       listEl.innerHTML = msgs.map(m=>{
         const own = m.senderId===myChatId;
         return `
@@ -3744,6 +3821,10 @@
           </div>
         `;
       }).join('') || '<div class="notif-empty">No messages yet — say hi.</div>';
+      if(prevCount!==null && msgs.length>prevCount && !prefersReducedMotion()){
+        [...listEl.children].slice(-(msgs.length-prevCount)).forEach(k=> k.classList.add('chat-msg-new'));
+      }
+      chatCountKey = channelKey; chatCountN = msgs.length;
       if(forceScroll || wasAtBottom) listEl.scrollTop = listEl.scrollHeight;
     }catch(e){
       if(chatLastSignature===null) listEl.innerHTML = `<div class="notif-empty">${escapeHtml(e.message)}</div>`;
