@@ -3006,9 +3006,11 @@
   let drLoadedKey = null;  // "month|member" currently on screen
   let drLoading = false;
   let drRowSeq = 0;
+  let drSizeTop = ()=>{}; // re-measures the table so the top scrollbar matches it; set per render in wireDailyReport()
   const DR_FIELDS = ['date','status','project','area','package','item','type','subtype','revNo','numDwgs','description','notes','normalHours','dwgsStatus'];
   const DR_HEADERS = ['Date','Day','Weekend','Status','Project','Area / Zone','Package','Item','TYPE','Subtype','REV NO.','VALUE','NO OF DWGS','TOT NO OF DWGS','Task Description','Notes','Normal Hours','Day Fraction','DWGS Status'];
 
+  window.addEventListener('resize', ()=> drSizeTop());
   window.addEventListener('beforeunload', (e)=>{ if(drDirty){ e.preventDefault(); e.returnValue=''; } });
 
   function escAttr(s){ return escapeHtml(s).replace(/"/g,'&quot;'); }
@@ -3103,7 +3105,7 @@
         <td><input type="number" min="0" max="24" step="any" data-f="normalHours" value="${escAttr(r.normalHours)}" ${dis}></td>
         <td class="dr-calc" data-c="frac">${frac}</td>
         <td>${drSelectHtml('dwgsStatus', drLists.dwgsStatuses, r.dwgsStatus)}</td>
-        <td class="dr-actions">${drCanEdit ? `<button type="button" class="dr-row-btn" data-act="dup" title="Duplicate this row">⧉</button><button type="button" class="dr-row-btn" data-act="del" title="Delete this row">✕</button>` : ''}</td>
+        <td class="dr-actions">${drCanEdit ? `<button type="button" class="dr-row-btn" data-act="ins" title="Insert a new row right below this one">+</button><button type="button" class="dr-row-btn" data-act="dup" title="Duplicate this row">⧉</button><button type="button" class="dr-row-btn" data-act="del" title="Delete this row">✕</button>` : ''}</td>
       </tr>`;
   }
 
@@ -3158,6 +3160,7 @@
           <span id="drDirtyNote" class="dr-unsaved" style="display:none;">&nbsp;● Unsaved changes</span>
         </div>
         <div class="dr-summary" id="drSummary">${drSummaryHtml()}</div>
+        <div class="dr-hscroll-top" id="drHScrollTop" style="display:none;"><div id="drHScrollInner"></div></div>
         <div class="dr-table-wrap">
           <table class="dr-table">
             <thead><tr>
@@ -3165,7 +3168,7 @@
               <th style="min-width:210px;">Project</th><th style="min-width:150px;">Area / Zone</th><th style="min-width:110px;">Package</th><th style="min-width:180px;">Item</th>
               <th style="min-width:140px;">TYPE</th><th style="min-width:96px;">Subtype</th><th style="min-width:116px;">REV NO.</th><th style="min-width:64px;">VALUE</th>
               <th style="min-width:96px;">NO OF DWGS</th><th style="min-width:96px;">TOT NO OF DWGS</th><th style="min-width:280px;">Task Description</th><th style="min-width:170px;">Notes</th>
-              <th style="min-width:96px;">Normal Hours</th><th style="min-width:84px;">Day Fraction</th><th style="min-width:116px;">DWGS Status</th><th style="min-width:70px;"></th>
+              <th style="min-width:96px;">Normal Hours</th><th style="min-width:84px;">Day Fraction</th><th style="min-width:116px;">DWGS Status</th><th style="min-width:108px;"></th>
             </tr></thead>
             <tbody id="drBody">${drRows.map(drRowHtml).join('')}</tbody>
           </table>
@@ -3249,6 +3252,7 @@
       if(f==='type'){ // the Subtype dropdown's options depend on TYPE, so rebuild this row
         const tmp = document.createElement('tbody'); tmp.innerHTML = drRowHtml(r);
         tr.replaceWith(tmp.firstElementChild);
+        drSizeTop();
       } else drUpdateDerived(tr, r);
       drRefreshSummary();
     });
@@ -3256,15 +3260,40 @@
       const btn = e.target.closest('[data-act]'); if(!btn) return;
       const r = rowOf(btn); if(!r) return;
       const idx = drRows.indexOf(r);
+      let focusKey = null;
       if(btn.dataset.act==='del'){ drRows.splice(idx,1); }
       else if(btn.dataset.act==='dup'){ drRows.splice(idx+1, 0, Object.assign({}, r, {_k:++drRowSeq})); }
+      else if(btn.dataset.act==='ins'){ // a new task for the same day, placed right under this row instead of at the bottom of the month
+        const row = drBlankRow({date: r.date});
+        if(r.status==='At work'){ row.project = r.project; row.area = r.area; row.package = r.package; }
+        drRows.splice(idx+1, 0, row);
+        focusKey = row._k;
+      }
       drMarkDirty(); drRerenderBody();
+      if(focusKey){
+        const input = document.querySelector(`#drBody tr[data-k="${focusKey}"] [data-f="${drRows.find(x=>x._k===focusKey).project ? 'description' : 'project'}"]`);
+        if(input){ input.focus(); input.scrollIntoView({block:'nearest', inline:'nearest'}); }
+      }
     });
+
+    // A second horizontal scrollbar above the table, kept in step with the
+    // one at the bottom — with ~20 columns and a tall table, the bottom bar
+    // can be far out of reach.
+    const wrap = document.querySelector('#dailyReportView .dr-table-wrap');
+    const top = document.getElementById('drHScrollTop');
+    const inner = document.getElementById('drHScrollInner');
+    const table = wrap.querySelector('table');
+    drSizeTop = ()=>{ inner.style.width = wrap.scrollWidth+"px"; top.style.display = wrap.scrollWidth > wrap.clientWidth ? "block" : "none"; };
+    top.addEventListener('scroll', ()=>{ if(wrap.scrollLeft !== top.scrollLeft) wrap.scrollLeft = top.scrollLeft; });
+    wrap.addEventListener('scroll', ()=>{ if(top.scrollLeft !== wrap.scrollLeft) top.scrollLeft = wrap.scrollLeft; });
+    drSizeTop();
+    if(window.ResizeObserver){ const ro = new ResizeObserver(()=>drSizeTop()); ro.observe(table); ro.observe(wrap); }
   }
 
   function drRerenderBody(){
     document.getElementById('drBody').innerHTML = drRows.map(drRowHtml).join('');
     drRefreshSummary();
+    drSizeTop(); // new rows can make the columns wider than before
   }
 
   function drFillMonth(){

@@ -474,3 +474,5 @@ input.date-invalid{border-color:var(--rust) !important;}
 .dr-actions{white-space:nowrap;text-align:right;}
 .dr-row-btn{background:transparent;border:1px solid var(--line-on-ink);color:var(--text-dim-on-ink);border-radius:3px;width:26px;height:26px;cursor:pointer;font-size:12px;margin-left:3px;}
 .dr-row-btn:hover{border-color:var(--amber);color:var(--paper);}
+.dr-hscroll-top{overflow-x:auto;overflow-y:hidden;height:16px;margin-bottom:4px;}
+.dr-hscroll-top>div{height:1px;}
