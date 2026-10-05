@@ -476,3 +476,7 @@ input.date-invalid{border-color:var(--rust) !important;}
 .dr-row-btn:hover{border-color:var(--amber);color:var(--paper);}
 .dr-hscroll-top{overflow-x:auto;overflow-y:hidden;height:16px;margin-bottom:4px;}
 .dr-hscroll-top>div{height:1px;}
+/* Row buttons sit first in the row and stay put while the table scrolls sideways. */
+.dr-table td.dr-actions{position:sticky;left:0;z-index:1;background:var(--ink-2);text-align:left;padding-left:6px;}
+.dr-table th.dr-actions-th{left:0;z-index:3;}
+.dr-row-btn{margin-left:0;margin-right:3px;}

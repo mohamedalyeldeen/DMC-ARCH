@@ -3086,6 +3086,7 @@
     const val = drValue(r), tot = drTot(r), frac = drFraction(r);
     return `
       <tr data-k="${r._k}" class="${weekend?'dr-row-weekend':''}">
+        <td class="dr-actions">${drCanEdit ? `<button type="button" class="dr-row-btn" data-act="ins" title="Insert a new row right below this one">+</button><button type="button" class="dr-row-btn" data-act="dup" title="Duplicate this row">⧉</button><button type="button" class="dr-row-btn" data-act="del" title="Delete this row">✕</button>` : ''}</td>
         <td><input type="date" data-f="date" value="${escAttr(r.date)}" min="${drMonth}-01" max="${drMonthEnd()}" ${dis}></td>
         <td class="dr-calc" data-c="day">${day}</td>
         <td class="dr-calc" data-c="weekend">${weekend}</td>
@@ -3105,7 +3106,6 @@
         <td><input type="number" min="0" max="24" step="any" data-f="normalHours" value="${escAttr(r.normalHours)}" ${dis}></td>
         <td class="dr-calc" data-c="frac">${frac}</td>
         <td>${drSelectHtml('dwgsStatus', drLists.dwgsStatuses, r.dwgsStatus)}</td>
-        <td class="dr-actions">${drCanEdit ? `<button type="button" class="dr-row-btn" data-act="ins" title="Insert a new row right below this one">+</button><button type="button" class="dr-row-btn" data-act="dup" title="Duplicate this row">⧉</button><button type="button" class="dr-row-btn" data-act="del" title="Delete this row">✕</button>` : ''}</td>
       </tr>`;
   }
 
@@ -3164,11 +3164,11 @@
         <div class="dr-table-wrap">
           <table class="dr-table">
             <thead><tr>
-              <th style="min-width:128px;">Date</th><th style="min-width:84px;">Day</th><th style="min-width:84px;">Weekend</th><th style="min-width:116px;">Status</th>
+              <th class="dr-actions-th" style="min-width:108px;"></th><th style="min-width:128px;">Date</th><th style="min-width:84px;">Day</th><th style="min-width:84px;">Weekend</th><th style="min-width:116px;">Status</th>
               <th style="min-width:210px;">Project</th><th style="min-width:150px;">Area / Zone</th><th style="min-width:110px;">Package</th><th style="min-width:180px;">Item</th>
               <th style="min-width:140px;">TYPE</th><th style="min-width:96px;">Subtype</th><th style="min-width:116px;">REV NO.</th><th style="min-width:64px;">VALUE</th>
               <th style="min-width:96px;">NO OF DWGS</th><th style="min-width:96px;">TOT NO OF DWGS</th><th style="min-width:280px;">Task Description</th><th style="min-width:170px;">Notes</th>
-              <th style="min-width:96px;">Normal Hours</th><th style="min-width:84px;">Day Fraction</th><th style="min-width:116px;">DWGS Status</th><th style="min-width:108px;"></th>
+              <th style="min-width:96px;">Normal Hours</th><th style="min-width:84px;">Day Fraction</th><th style="min-width:116px;">DWGS Status</th>
             </tr></thead>
             <tbody id="drBody">${drRows.map(drRowHtml).join('')}</tbody>
           </table>
