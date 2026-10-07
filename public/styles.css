@@ -570,23 +570,25 @@ input.date-invalid{border-color:var(--rust) !important;}
    Layers behind the sign-in card: a drifting blueprint grid, two slow colour
    glows, a scan line, and a canvas (public/auth-bg.js) with the rotating DNA
    helices + particle network. Everything is pointer-events:none. */
-#authOverlay{background:radial-gradient(at 50% 42%,#1f2d41 0%,#141c29 42%,#0a0f16 80%);overflow:hidden;}
+#authOverlay{background:radial-gradient(at 32% 50%,#2d3b50 0%,#1f2a3a 38%,#10161f 82%);overflow:hidden;}
+/* wide screens: scene on the left, sign-in card on the right */
+@media (min-width:901px){ #authOverlay{justify-content:flex-end;padding-right:max(6vw,56px);} }
 .auth-bg{position:absolute;inset:0;overflow:hidden;pointer-events:none;z-index:0;}
 .auth-bg-gridwrap{position:absolute;inset:0;overflow:hidden;
-  -webkit-mask-image:radial-gradient(120% 90% at 50% 40%,#000 0%,transparent 78%);mask-image:radial-gradient(120% 90% at 50% 40%,#000 0%,transparent 78%);}
+  -webkit-mask-image:radial-gradient(110% 90% at 34% 52%,#000 0%,transparent 78%);mask-image:radial-gradient(110% 90% at 34% 52%,#000 0%,transparent 78%);}
 .auth-bg-grid{position:absolute;inset:-64px;
-  background-image:linear-gradient(rgba(125,196,176,.11) 1px,transparent 1px),linear-gradient(90deg,rgba(125,196,176,.11) 1px,transparent 1px);
+  background-image:linear-gradient(rgba(246,241,228,.06) 1px,transparent 1px),linear-gradient(90deg,rgba(246,241,228,.06) 1px,transparent 1px);
   background-size:64px 64px;animation:authGridDrift 30s linear infinite;}
 @keyframes authGridDrift{to{transform:translate(64px,64px)}}
 .auth-bg-glow{position:absolute;border-radius:50%;}
-.auth-bg-glow.g1{width:48vmax;height:48vmax;left:-14vmax;top:-16vmax;background:radial-gradient(circle,rgba(226,137,43,.30),transparent 65%);animation:authGlowA 24s ease-in-out infinite alternate;}
-.auth-bg-glow.g2{width:54vmax;height:54vmax;right:-18vmax;bottom:-22vmax;background:radial-gradient(circle,rgba(95,179,165,.26),transparent 65%);animation:authGlowB 28s ease-in-out infinite alternate;}
+.auth-bg-glow.g1{width:48vmax;height:48vmax;left:-14vmax;top:-16vmax;background:radial-gradient(circle,rgba(226,137,43,.26),transparent 65%);animation:authGlowA 24s ease-in-out infinite alternate;}
+.auth-bg-glow.g2{width:54vmax;height:54vmax;right:-18vmax;bottom:-22vmax;background:radial-gradient(circle,rgba(62,124,116,.34),transparent 65%);animation:authGlowB 28s ease-in-out infinite alternate;}
 @keyframes authGlowA{to{transform:translate(9vmax,7vmax) scale(1.12)}}
 @keyframes authGlowB{to{transform:translate(-10vmax,-6vmax) scale(1.1)}}
 #authBgCanvas{position:absolute;inset:0;}
-.auth-bg-scan{position:absolute;left:0;right:0;top:0;height:1px;background:linear-gradient(90deg,transparent,rgba(226,137,43,.55),transparent);animation:authScan 9s ease-in-out infinite;}
+.auth-bg-scan{position:absolute;left:0;right:0;top:0;height:1px;background:linear-gradient(90deg,transparent,rgba(226,137,43,.5),transparent);animation:authScan 9s ease-in-out infinite;}
 @keyframes authScan{0%{transform:translateY(6vh);opacity:0}15%{opacity:.85}85%{opacity:.85}100%{transform:translateY(94vh);opacity:0}}
-.auth-bg-tick{position:absolute;font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:1.6px;color:rgba(159,184,172,.55);}
+.auth-bg-tick{position:absolute;font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:1.6px;color:rgba(246,241,228,.4);}
 .auth-bg-tick.tl{top:22px;left:26px;}
 .auth-bg-tick.br{bottom:22px;right:26px;}
 #authOverlay .auth-card{position:relative;z-index:1;box-shadow:0 28px 90px rgba(0,0,0,.55),0 0 0 1px rgba(226,137,43,.16);}
