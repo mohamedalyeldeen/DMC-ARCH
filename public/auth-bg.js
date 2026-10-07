@@ -4,8 +4,12 @@
 // In Progress → Submitted → Done) and pulsing when they reach Done, with thin
 // light streaks and dust drifting upward behind them.
 //
-// Everything is drawn from the clock `t` alone (no per-object state), so the
-// still frame used for reduced-motion is the same code as the animation.
+// You can grab the cube with the mouse (or a finger) and turn it; let go and it coasts
+// to a stop, then picks its own slow spin back up.
+//
+// Apart from the cube's rotation (autoT + your drag), everything is drawn from the
+// clock `t` alone, with no per-object state, so the still frame used for
+// reduced-motion is the same code as the animation.
 // The grid, glows and scan line are plain CSS (auth-bg rules in styles.css).
 //
 // The loop only runs while the login overlay is open: it starts when
@@ -25,6 +29,11 @@
   let raf = 0, running = false;
   let wide = true, cx = 0, cyCube = 0, cyR = 0, rx = 0, S = 60;
   let mx = 0.5, my = 0.5, tmx = 0.5, tmy = 0.5; // pointer (0..1), eased for a soft parallax
+  // Grab-to-rotate: the cube's own spin runs on autoT (which eases to a stop while you hold it
+  // or it coasts), and your drag adds uYaw/uPitch on top, so letting go hands off smoothly.
+  let autoT = 0, spin = 1, uYaw = 0, uPitch = 0, vYaw = 0, vPitch = 0;
+  let hovering = false, dragging = false, hoverK = 0, lastNow = 0, dragX = 0, dragY = 0;
+  let cubeX = 0, cubeY = 0; // where the cube was last drawn, for hit-testing
 
   const rnd = (i, k)=>{ const s = Math.sin(i * 127.1 + k * 311.7) * 43758.5453; return s - Math.floor(s); };
   const lerp = (a, b, k)=> a + (b - a) * k;
@@ -190,7 +199,8 @@
 
   function drawCube(t, ox, oy){
     const FOV = S * 7;
-    const ay = t * 0.00055, ax = .62 + Math.sin(t * 0.00031) * .18;
+    const ay = autoT * 0.00055 + uYaw, ax = .62 + Math.sin(autoT * 0.00031) * .18 + uPitch;
+    cubeX = cx + ox; cubeY = cyCube + oy;
     const proj = (p)=>{ const sc = FOV / (FOV + p[2]); return [cx + ox + p[0] * sc, cyCube + oy + p[1] * sc, sc, p[2]]; };
     const depthK = (z)=> 1 - .45 * Math.min(1, Math.max(0, (z + S * 1.75) / (S * 3.5)));
 
@@ -206,8 +216,8 @@
       }
       return pts;
     };
-    edges(.46, -t * 0.0008, ax * 1.3, [[1, .45, GOLD]]); // inner cube, counter-rotating
-    const pts = edges(1, ay, ax, [[5, .07, GOLD], [1.4, .9, CREAM]]);
+    edges(.46, -autoT * 0.0008 + uYaw * .6, ax * 1.3, [[1, .45 + .3 * hoverK, GOLD]]); // inner cube, counter-rotating
+    const pts = edges(1, ay, ax, [[5 + 3 * hoverK, .07 + .14 * hoverK, GOLD], [1.4, .9, CREAM]]);
 
     for(const p of cubePts){ // sparkle particles
       const q = proj(rot([p.x * S, p.y * S, p.z * S], ay, ax));
@@ -217,7 +227,7 @@
     }
     for(const q of pts){ // bright corners
       ctx.fillStyle = `rgba(255,255,255,${.9 * depthK(q[3])})`;
-      ctx.beginPath(); ctx.arc(q[0], q[1], 2.1 * q[2], 0, 6.2832); ctx.fill();
+      ctx.beginPath(); ctx.arc(q[0], q[1], (2.1 + 1.2 * hoverK) * q[2], 0, 6.2832); ctx.fill();
     }
   }
 
@@ -250,7 +260,19 @@
 
   function frame(now){
     if(!running) return;
+    const dt = lastNow ? Math.min(64, now - lastNow) : 16;
+    lastNow = now;
     mx += (tmx - mx) * .05; my += (tmy - my) * .05;
+    if(!dragging){ // coast after a throw, then settle
+      uYaw += vYaw; uPitch += vPitch;
+      vYaw *= .95; vPitch *= .95;
+      if(Math.abs(vYaw) < .0003) vYaw = 0;
+      if(Math.abs(vPitch) < .0003) vPitch = 0;
+    }
+    const coasting = vYaw !== 0 || vPitch !== 0;
+    spin += ((dragging || coasting ? 0 : 1) - spin) * .08; // the cube's own spin pauses while you hold or throw it
+    autoT += dt * spin;
+    hoverK += ((hovering || dragging ? 1 : 0) - hoverK) * .14;
     draw(now);
     raf = requestAnimationFrame(frame);
   }
@@ -259,16 +281,50 @@
     resize();
     if(reduceMotion){ draw(0); return; }
     running = true;
+    lastNow = 0;
     raf = requestAnimationFrame(frame);
   }
   function stop(){
     running = false;
     cancelAnimationFrame(raf);
+    dragging = false; hovering = false; hoverK = 0; vYaw = vPitch = 0;
+    overlay.style.cursor = '';
   }
   function sync(){ overlay.classList.contains('open') ? start() : stop(); }
 
-  overlay.addEventListener('pointermove', (e)=>{ tmx = e.clientX / (w || 1); tmy = e.clientY / (h || 1); });
+  const overCube = (x, y)=> Math.hypot(x - cubeX, y - cubeY) < S * 1.55;
+  const onCard = (e)=> !!(e.target.closest && e.target.closest('.auth-card'));
+
+  overlay.addEventListener('pointermove', (e)=>{
+    if(dragging){
+      const dx = e.clientX - dragX, dy = e.clientY - dragY;
+      dragX = e.clientX; dragY = e.clientY;
+      vYaw = -dx * .011; vPitch = dy * .011; // dragging right turns the front face right
+      uYaw += vYaw; uPitch += vPitch;
+      return; // the parallax stays put while you hold the cube
+    }
+    tmx = e.clientX / (w || 1); tmy = e.clientY / (h || 1);
+    hovering = !reduceMotion && !onCard(e) && overCube(e.clientX, e.clientY);
+    overlay.style.cursor = hovering ? 'grab' : '';
+  });
+  overlay.addEventListener('pointerdown', (e)=>{
+    if(reduceMotion || !running || onCard(e) || !overCube(e.clientX, e.clientY)) return;
+    dragging = true; dragX = e.clientX; dragY = e.clientY; vYaw = vPitch = 0;
+    overlay.style.cursor = 'grabbing';
+    try{ overlay.setPointerCapture(e.pointerId); }catch(err){ /* pointer already gone — the drag simply won't track */ }
+    e.preventDefault();
+  });
+  const release = (e)=>{
+    if(!dragging) return;
+    dragging = false;
+    overlay.style.cursor = hovering ? 'grab' : '';
+    try{ overlay.releasePointerCapture(e.pointerId); }catch(err){ /* already released */ }
+  };
+  overlay.addEventListener('pointerup', release);
+  overlay.addEventListener('pointercancel', release);
+  overlay.addEventListener('pointerleave', ()=>{ if(!dragging){ hovering = false; overlay.style.cursor = ''; } });
   window.addEventListener('resize', ()=>{ if(overlay.classList.contains('open')) resize(); });
   new MutationObserver(sync).observe(overlay, {attributes: true, attributeFilter: ['class']});
   sync();
 })();
+

@@ -570,7 +570,7 @@ input.date-invalid{border-color:var(--rust) !important;}
    Layers behind the sign-in card: a drifting blueprint grid, two slow colour
    glows, a scan line, and a canvas (public/auth-bg.js) with the rotating DNA
    helices + particle network. Everything is pointer-events:none. */
-#authOverlay{background:radial-gradient(at 32% 50%,#2d3b50 0%,#1f2a3a 38%,#10161f 82%);overflow:hidden;}
+#authOverlay{background:radial-gradient(at 32% 50%,#2d3b50 0%,#1f2a3a 38%,#10161f 82%);overflow:hidden;touch-action:none;}
 /* wide screens: scene on the left, sign-in card on the right */
 @media (min-width:901px){ #authOverlay{justify-content:flex-end;padding-right:max(6vw,56px);} }
 .auth-bg{position:absolute;inset:0;overflow:hidden;pointer-events:none;z-index:0;}
