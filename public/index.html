@@ -21,6 +21,14 @@
 <div id="loadingScreen">LOADING CLICK…</div>
 
 <div class="modal-overlay" id="authOverlay">
+  <div class="auth-bg" aria-hidden="true">
+    <div class="auth-bg-gridwrap"><div class="auth-bg-grid"></div></div>
+    <div class="auth-bg-glow g1"></div><div class="auth-bg-glow g2"></div>
+    <canvas id="authBgCanvas"></canvas>
+    <div class="auth-bg-scan"></div>
+    <div class="auth-bg-tick tl">DMC CONTRACTING</div>
+    <div class="auth-bg-tick br">TEAM TASK TRACKER</div>
+  </div>
   <div class="auth-card">
     <img src="/dmc-logo-dark.png" class="auth-logo" alt="DMC Contracting">
     <div id="setupPanel" style="display:none;">
@@ -371,6 +379,7 @@
   <div class="chat-float-body" id="chatFloatBody"></div>
 </div>
 
+<script src="/auth-bg.js"></script>
 <script src="/app.js"></script>
 <script>
   // Registers the no-op service worker (see sw.js) purely so Chrome/Android
