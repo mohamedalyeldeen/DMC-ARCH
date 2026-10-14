@@ -219,7 +219,7 @@
     clearUndo();
     capacityLoaded = false;
     capacityData = [];
-    drLoadedKey = null; drRows = []; drMemberId = null; drDirty = false; // next login must not see the previous person's report
+    drLoadedKey = null; drRows = []; drMemberId = null; drDirty = false; drMode = 'daily'; alLoadedKey = null; alData = null; // next login must not see the previous person's report
     closeChatFloat();
     document.getElementById('chatBubbleBtn').style.display = 'none';
     document.getElementById('appShell').style.display = 'none';
@@ -410,7 +410,7 @@
       document.getElementById('newTaskBtn').style.display='none';
       loadAndRenderProjectProgress();
     } else if(activeTab==='dailyReport'){
-      document.getElementById('viewTitle').textContent = 'Daily Report';
+      document.getElementById('viewTitle').textContent = 'Reports';
       document.getElementById('dailyReportView').style.display='block';
       document.getElementById('newTaskBtn').style.display='none';
       renderDailyReportTab();
@@ -3117,6 +3117,7 @@
   }
 
   function renderDailyReportTab(){
+    if(drMode==='allocation'){ renderAllocationTab(); return; }
     if(drMemberId===null) drMemberId = (!isOwner() && !isViewer()) ? session.id : '';
     if(drLoading) return;
     if(drLoadedKey === drMonth+'|'+drMemberId) return; // already on screen — never rebuild over unsaved edits
@@ -3219,7 +3220,7 @@
       ${drListsHtml()}
       <div class="dash-card">
         <div class="dr-toolbar">
-          <h3 style="margin:0;">Daily Report</h3>
+          ${reportsModeToggleHtml()}
           <div class="dr-controls">
             <input type="month" id="drMonthInput" value="${drMonth}">
             ${memberPicker}
@@ -3278,6 +3279,7 @@
   }
 
   function wireDailyReport(){
+    wireReportsModeToggle();
     document.getElementById('drMonthInput').addEventListener('change', (e)=>{
       if(!e.target.value) return;
       if(drDirty && !confirm('You have unsaved changes. Discard them and switch month?')){ e.target.value = drMonth; return; }
@@ -3509,6 +3511,273 @@
         const csv = '﻿' + lines.map(row=> row.map(csvEscape).join(',')).join('\r\n');
         downloadBlobFile(new Blob([csv], {type:'text/csv;charset=utf-8;'}), fileName+'.csv');
         alert('The Excel library could not be loaded, so a CSV was downloaded instead — it opens in Excel and pastes the same way.');
+      }
+    }catch(e){ alert(e.message); }
+    finally{ btn.disabled = false; btn.textContent = label; }
+  }
+
+  // ---------- REPORTS › ALLOCATION ----------
+  // The second view of the Reports tab. Mirrors the "Allocation of Hours"
+  // sheet of the Architectural Data Consolidation workbook: for one month,
+  // each engineer's share of their expected hours that went to each project.
+  //   cell  = Σ Normal Hours logged on that project / (working days × 8)
+  //   Total = the row's share of the month accounted for (≈100% when the
+  //           month is fully logged; under = unallocated, over = overtime)
+  // The numbers come straight from the Daily report rows, so nothing is
+  // entered twice. Working days are the same per-engineer/per-month figure
+  // the Productivity tab uses (WorkDays); where the owner hasn't entered one
+  // it falls back to the calendar (Fri/Sat and public holidays off).
+  let drMode = 'daily';      // 'daily' | 'allocation' — the two views inside Reports
+  let alMonth = drMonth;
+  let alUnit = 'percent';    // 'percent' | 'hours'
+  let alShowAll = false;     // include projects nobody logged hours on
+  let alData = null;         // {rows, lists, members, workdays}
+  let alLoadedKey = null;
+  let alLoading = false;
+
+  function reportsModeToggleHtml(){
+    return `<div class="gantt-toggle-group">
+      <button type="button" class="gantt-toggle-btn ${drMode==='daily'?'active':''}" id="drModeDailyBtn">Daily report</button>
+      <button type="button" class="gantt-toggle-btn ${drMode==='allocation'?'active':''}" id="drModeAllocBtn">Allocation</button>
+    </div>`;
+  }
+  function wireReportsModeToggle(){
+    document.getElementById('drModeDailyBtn').addEventListener('click', ()=> setReportsMode('daily'));
+    document.getElementById('drModeAllocBtn').addEventListener('click', ()=> setReportsMode('allocation'));
+  }
+  function alKey(){ return alMonth + '|' + (isLeaderLike() ? 'all' : session.id); }
+
+  function setReportsMode(mode){
+    if(mode===drMode) return;
+    drMode = mode;
+    // Each view keeps its data in memory, so flipping between them never
+    // loses unsaved daily-report edits.
+    if(mode==='daily'){
+      if(drLoadedKey && drLists) renderDailyReport(); else { drLoadedKey = null; renderDailyReportTab(); }
+    } else {
+      if(alLoadedKey===alKey() && alData) renderAllocation(); else loadAllocation();
+    }
+  }
+
+  function renderAllocationTab(){
+    if(alLoading) return;
+    if(alLoadedKey===alKey() && alData) return; // already on screen; the Refresh button re-fetches
+    loadAllocation();
+  }
+
+  async function loadAllocation(){
+    const el = document.getElementById('dailyReportView');
+    alLoading = true;
+    if(!alData) el.innerHTML = `<div class="dash-card">${skeletonHtml()}</div>`;
+    try{
+      const all = isLeaderLike();
+      const [dr, wd] = await Promise.all([
+        api('GET', '/api/daily-report?month='+encodeURIComponent(alMonth)+'&memberId='+encodeURIComponent(all ? 'all' : session.id)),
+        api('GET', '/api/workdays')
+      ]);
+      alData = {
+        rows: dr.rows || [], lists: dr.lists,
+        members: all ? (dr.members || []) : [{id: session.id, name: session.name}],
+        workdays: wd.workdays || []
+      };
+      alLoadedKey = alKey();
+      renderAllocation();
+    }catch(e){
+      el.innerHTML = `<div class="dash-card"><div style="margin-bottom:12px;">${reportsModeToggleHtml()}</div><div class="notif-empty">${escapeHtml(e.message)}</div></div>`;
+      wireReportsModeToggle();
+    }finally{ alLoading = false; }
+  }
+
+  function alCalendarDays(){
+    const [y,m] = alMonth.split('-').map(Number);
+    const n = new Date(Date.UTC(y,m,0)).getUTCDate();
+    const holidays = new Set((state.taxonomy && state.taxonomy.holidays) || []);
+    let c = 0;
+    for(let d=1; d<=n; d++){
+      const iso = alMonth+'-'+String(d).padStart(2,'0');
+      if(!drIsWeekendName(drDayName(iso)) && !holidays.has(iso)) c++;
+    }
+    return c;
+  }
+
+  function alCompute(){
+    const projects = alData.lists.projects;
+    const byLower = {}; projects.forEach(p=>{ byLower[p.toLowerCase()] = p; });
+    const calendarDays = alCalendarDays();
+    return alData.members.map(m=>{
+      const hrs = {}; let other = 0, total = 0;
+      alData.rows.forEach(r=>{
+        if(r.memberId !== m.id) return;
+        const h = Number(r.normalHours) || 0;
+        if(!h) return;
+        total += h;
+        const p = byLower[String(r.project||'').toLowerCase()];
+        if(p) hrs[p] = (hrs[p]||0) + h; else other += h; // a project not in the list still counts toward the total
+      });
+      const wd = alData.workdays.find(w=> w.memberId===m.id && w.month===alMonth);
+      const days = wd ? (parseInt(wd.days,10)||0) : calendarDays;
+      return {member: m, hrs, other, total, days, manual: !!wd, expected: days*8};
+    }).sort((a,b)=> a.member.name.localeCompare(b.member.name));
+  }
+
+  const alPct = (x)=> (Math.round(x*1000)/10) + '%';
+  const alHrs = (x)=> String(Math.round(x*100)/100);
+
+  function renderAllocation(){
+    const el = document.getElementById('dailyReportView');
+    const oldWrap = el.querySelector('.al-wrap');
+    const keepLeft = oldWrap ? oldWrap.scrollLeft : 0, keepTop = oldWrap ? oldWrap.scrollTop : 0;
+    const rows = alCompute();
+    const projects = alData.lists.projects;
+    const isPct = alUnit==='percent';
+    const cols = alShowAll ? projects : projects.filter(p=> rows.some(r=> r.hrs[p] > 0));
+    const showOther = rows.some(r=> r.other > 0);
+    const anyHours = rows.some(r=> r.total > 0);
+
+    const cell = (hours, expected)=>{
+      if(!hours) return '<td class="al-cell"></td>';
+      const share = expected > 0 ? hours/expected : null;
+      const text = isPct ? (share===null ? '—' : alPct(share)) : alHrs(hours);
+      const heat = share===null ? 0 : Math.min(.55, share*.9);
+      return `<td class="al-cell has" style="background:rgba(226,137,43,${heat.toFixed(3)});" title="${alHrs(hours)} h">${text}</td>`;
+    };
+    const body = rows.map(r=>{
+      const daysCell = isOwner()
+        ? `<input type="number" min="0" max="31" class="al-days ${r.manual?'':'al-days-default'}" data-id="${r.member.id}" value="${r.days}" title="${r.manual?'Entered by the owner':'Calendar working days — type a number to override'}">`
+        : `<span class="${r.manual?'':'al-days-default'}">${r.days}</span>`;
+      let totalText = '', totalCls = '';
+      if(r.total > 0){
+        totalText = isPct ? (r.expected>0 ? alPct(r.total/r.expected) : '—') : alHrs(r.total);
+        if(r.expected > 0){ const t = r.total/r.expected; totalCls = t < .98 ? 'low' : t > 1.02 ? 'high' : ''; }
+      }
+      return `<tr>
+        <td class="al-name">${escapeHtml(r.member.name)}</td>
+        <td class="al-daycell">${daysCell}</td>
+        ${cols.map(p=> cell(r.hrs[p], r.expected)).join('')}
+        ${showOther ? cell(r.other, r.expected) : ''}
+        <td class="al-total ${totalCls}">${totalText}</td>
+        <td class="al-daycell al-dim">${r.expected}</td>
+      </tr>`;
+    }).join('');
+    const sumFor = (p)=> rows.reduce((s,r)=> s + (r.hrs[p]||0), 0);
+    const foot = `<tr class="al-foot">
+      <td class="al-name">Team hours</td><td></td>
+      ${cols.map(p=>{ const s = sumFor(p); return `<td class="al-cell">${s ? alHrs(s) : ''}</td>`; }).join('')}
+      ${showOther ? `<td class="al-cell">${alHrs(rows.reduce((s,r)=>s+r.other,0)) || ''}</td>` : ''}
+      <td class="al-cell">${alHrs(rows.reduce((s,r)=>s+r.total,0))}</td><td></td>
+    </tr>`;
+
+    el.innerHTML = `
+      <div class="dash-card">
+        <div class="dr-toolbar">
+          ${reportsModeToggleHtml()}
+          <div class="dr-controls">
+            <input type="month" id="alMonthInput" value="${alMonth}">
+            <div class="gantt-toggle-group">
+              <button type="button" class="gantt-toggle-btn ${isPct?'active':''}" id="alUnitPctBtn">% of month</button>
+              <button type="button" class="gantt-toggle-btn ${isPct?'':'active'}" id="alUnitHrsBtn">Hours</button>
+            </div>
+            <label class="al-check"><input type="checkbox" id="alShowAll" ${alShowAll?'checked':''}> All projects</label>
+            <button type="button" class="ghost-btn" id="alRefreshBtn">↻ Refresh</button>
+            <button type="button" class="ghost-btn" id="alExportBtn">⬇ Export Excel</button>
+          </div>
+        </div>
+        <div class="dr-hint">
+          Each engineer's <b>Normal Hours</b> from the Daily report, split across the projects they worked on, as a share of their expected hours
+          (<b>Days × 8</b>). Days default to the calendar (Friday/Saturday and public holidays off)${isOwner() ? ' — type a number in the Days column to override it for one engineer' : ''}.
+          <b>Total</b> turns <span class="al-low-note">amber</span> when part of the month isn't allocated and <span class="al-high-note">red</span> when it's over.
+        </div>
+        ${anyHours ? '' : `<div class="notif-empty">No Normal Hours have been entered for ${escapeHtml(alMonth)} yet — they come from the Daily report view.</div>`}
+        <div class="al-wrap">
+          <table class="dr-table al-table">
+            <thead><tr>
+              <th class="al-name-th">Engineer</th><th>Days</th>
+              ${cols.map(p=>`<th class="al-proj" title="${escAttr(p)}">${escapeHtml(p.trim())}</th>`).join('')}
+              ${showOther ? '<th class="al-proj" title="Projects not in the list">Other</th>' : ''}
+              <th>Total</th><th>Expected h</th>
+            </tr></thead>
+            <tbody>${body}${foot}</tbody>
+          </table>
+        </div>
+      </div>`;
+    const wrap = el.querySelector('.al-wrap');
+    wrap.scrollLeft = keepLeft; wrap.scrollTop = keepTop;
+    wireAllocation();
+  }
+
+  function wireAllocation(){
+    wireReportsModeToggle();
+    document.getElementById('alMonthInput').addEventListener('change', (e)=>{
+      if(!e.target.value) return;
+      alMonth = e.target.value; alLoadedKey = null; loadAllocation();
+    });
+    document.getElementById('alUnitPctBtn').addEventListener('click', ()=>{ alUnit='percent'; renderAllocation(); });
+    document.getElementById('alUnitHrsBtn').addEventListener('click', ()=>{ alUnit='hours'; renderAllocation(); });
+    document.getElementById('alShowAll').addEventListener('change', (e)=>{ alShowAll = e.target.checked; renderAllocation(); });
+    document.getElementById('alRefreshBtn').addEventListener('click', ()=>{ alLoadedKey = null; loadAllocation(); });
+    document.getElementById('alExportBtn').addEventListener('click', exportAllocation);
+    document.querySelectorAll('.al-days').forEach(input=>{
+      input.addEventListener('change', async ()=>{
+        const memberId = input.dataset.id;
+        const days = Math.max(0, Math.min(31, parseInt(input.value,10) || 0));
+        try{
+          await api('POST', '/api/workdays', {memberId, month: alMonth, days});
+          const existing = alData.workdays.find(w=> w.memberId===memberId && w.month===alMonth);
+          if(existing) existing.days = days; else alData.workdays.push({memberId, month: alMonth, days});
+          renderAllocation();
+        }catch(e){ alert(e.message); }
+      });
+    });
+  }
+
+  // Same layout as the original sheet — Year/Month, "Allocation of Hours",
+  // Engineer × project shares — plus a second sheet with the raw hours.
+  async function exportAllocation(){
+    const btn = document.getElementById('alExportBtn');
+    const label = btn.textContent;
+    btn.disabled = true; btn.textContent = 'Preparing…';
+    try{
+      const rows = alCompute();
+      const projects = alData.lists.projects;
+      const [y, m] = alMonth.split('-').map(Number);
+      const share = (h, exp)=> (h && exp > 0) ? Math.round(h/exp*1e6)/1e6 : '';
+      const header = ['Engineer', ...projects, 'Other', 'Total', 'Days', 'Expected hours'];
+      const shareRows = rows.map(r=> [r.member.name, ...projects.map(p=> share(r.hrs[p], r.expected)), share(r.other, r.expected), share(r.total, r.expected), r.days, r.expected]);
+      const hourRows = rows.map(r=> [r.member.name, ...projects.map(p=> r.hrs[p] || ''), r.other || '', r.total || '']);
+      const fileName = `Allocation - ${alMonth}`;
+      try{
+        const ExcelJS = await loadExcelJs();
+        const wb = new ExcelJS.Workbook();
+        const ws = wb.addWorksheet('Allocation');
+        ws.addRow(['Year', y]); ws.addRow(['Month', m]); ws.addRow([]);
+        ws.addRow(['Allocation of Hours']); ws.addRow([]);
+        ws.addRow(header);
+        shareRows.forEach(r=> ws.addRow(r));
+        const styleHeader = (row)=>{
+          row.font = {bold:true, color:{argb:'FF161616'}};
+          row.alignment = {vertical:'middle', wrapText:true};
+          row.eachCell(c=>{ c.fill = {type:'pattern', pattern:'solid', fgColor:{argb:'FFC6E0B4'}}; });
+        };
+        styleHeader(ws.getRow(6));
+        ws.getRow(4).font = {bold:true, size:13};
+        ws.getColumn(1).width = 26;
+        for(let c = 2; c <= header.length; c++) ws.getColumn(c).width = 14;
+        for(let r = 7; r <= ws.rowCount; r++) for(let c = 2; c <= projects.length + 3; c++) ws.getCell(r,c).numFmt = '0.0%';
+        ws.views = [{state:'frozen', xSplit:1, ySplit:6}];
+        const wh = wb.addWorksheet('Hours');
+        wh.addRow(['Engineer', ...projects, 'Other', 'Total']);
+        hourRows.forEach(r=> wh.addRow(r));
+        styleHeader(wh.getRow(1));
+        wh.getColumn(1).width = 26;
+        for(let c = 2; c <= projects.length + 3; c++) wh.getColumn(c).width = 14;
+        wh.views = [{state:'frozen', xSplit:1, ySplit:1}];
+        const buf = await wb.xlsx.writeBuffer();
+        downloadBlobFile(new Blob([buf], {type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'}), fileName+'.xlsx');
+      }catch(libErr){
+        // Couldn't load the spreadsheet library (blocked CDN, offline): a CSV opens in Excel too.
+        const csv = '﻿' + [['Year', y], ['Month', m], [], ['Allocation of Hours'], [], header, ...shareRows].map(row=> row.map(csvEscape).join(',')).join('\r\n');
+        downloadBlobFile(new Blob([csv], {type:'text/csv;charset=utf-8;'}), fileName+'.csv');
+        alert('The Excel library could not be loaded, so a CSV was downloaded instead — it opens in Excel.');
       }
     }catch(e){ alert(e.message); }
     finally{ btn.disabled = false; btn.textContent = label; }
