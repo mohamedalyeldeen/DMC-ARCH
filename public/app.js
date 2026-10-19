@@ -3233,8 +3233,8 @@
         </div>
         <div class="dr-hint">
           Enter each day's tasks, then press <b>Save</b> once. At the end of the month, <b>Export Excel</b> and paste into your original sheet:
-          copy the data cells from the exported <i>Database</i> sheet, then in the original use <b>Paste Special → Skip blanks</b> on the first empty row
-          (the Day / Weekend / VALUE / TOT / Day Fraction columns are left empty on purpose so your formulas stay intact).
+          copy the data cells from the exported <i>Database</i> sheet and paste (<b>Ctrl+V</b>) on the first empty row of the original
+          (Day / Weekend / VALUE / TOT / Day Fraction come as self-contained formulas, so they calculate after pasting).
           <span id="drDirtyNote" class="dr-unsaved" style="display:none;">&nbsp;● Unsaved changes</span>
         </div>
         <div class="dr-summary" id="drSummary">${drSummaryHtml()}</div>
@@ -3409,15 +3409,38 @@
   }
 
   // ---- export ----
-  // The calculated columns (Day, Weekend, VALUE, TOT NO OF DWGS, Day
-  // Fraction) are exported EMPTY on purpose: in the original they're
-  // formulas, and pasting values over them would silently turn them into
-  // fixed numbers. "Paste Special → Skip blanks" leaves them untouched.
-  function drExportRow(r){
+  // Day, Weekend, VALUE, TOT NO OF DWGS and Day Fraction are formulas in the
+  // original workbook. We export them as SELF-CONTAINED formulas: they only
+  // reference cells on the same row (no other sheet), and the VALUE lookup
+  // table is embedded, so a plain Ctrl+V into the original works without
+  // creating external links to the exported file. With no row number (CSV
+  // fallback) they are left empty. Empty cells are null (truly blank), never
+  // '' — an empty string is a real cell and defeats "Skip blanks".
+  const xq = s => '"' + String(s).replace(/"/g,'""') + '"';
+  function drValueFormula(n){
+    const vt = (drLists && drLists.valueTable) || [];
+    const revs = (drLists && drLists.revNos) || [];
+    if(!vt.length || !revs.length) return null;
+    const keys = '{' + vt.map(v=> xq(v[0]+'|'+v[1])).join(';') + '}';
+    const matrix = '{' + vt.map(v=> v[2].join(',')).join(';') + '}';
+    const heads = '{' + revs.map(xq).join(',') + '}';
+    return `IFERROR(INDEX(${matrix},MATCH(I${n}&"|"&J${n},${keys},0),MATCH(K${n},${heads},0)),"")`;
+  }
+  function drExportRow(r, n){
+    const f = formula => (n && formula) ? {formula} : null;
+    const num = v => (v===''||v==null) ? null : Number(v);
     return [
-      r.date ? parseIsoUTC(r.date) : '', '', '', r.status||'', r.project||'', r.area||'', r.package||'', r.item||'',
-      r.type||'', r.subtype||'', r.revNo||'', '', (r.numDwgs===''||r.numDwgs==null) ? '' : Number(r.numDwgs), '',
-      r.description||'', r.notes||'', (r.normalHours===''||r.normalHours==null) ? '' : Number(r.normalHours), '', r.dwgsStatus||''
+      r.date ? parseIsoUTC(r.date) : null,
+      f(`TEXT(A${n},"[$-en-US]dddd")`),
+      f(`IF(OR($B${n}="Friday",$B${n}="Saturday"),"Weekend","")`),
+      r.status||null, r.project||null, r.area||null, r.package||null, r.item||null,
+      r.type||null, r.subtype||null, r.revNo||null,
+      f(drValueFormula(n)),
+      num(r.numDwgs),
+      f(`IF(S${n}="on progress",0,IFERROR(M${n}*L${n},""))`),
+      r.description||null, r.notes||null, num(r.normalHours),
+      f(`IFERROR($Q${n}/8,"")`),
+      r.dwgsStatus||null
     ];
   }
 
@@ -3439,7 +3462,7 @@
     while(wb.getWorksheet(title)) title = title.slice(0,28)+' '+(n++);
     const ws = wb.addWorksheet(title);
     ws.addRow(DR_HEADERS);
-    rows.forEach(r=> ws.addRow(drExportRow(r)));
+    rows.forEach(r=> ws.addRow(drExportRow(r, ws.rowCount + 1)));
     const head = ws.getRow(1);
     head.font = {bold:true, color:{argb:'FF161616'}};
     head.eachCell(c=>{ c.fill = {type:'pattern', pattern:'solid', fgColor:{argb:'FFC6E0B4'}}; c.alignment = {vertical:'middle', wrapText:true}; });
@@ -3458,13 +3481,14 @@
       'HOW TO PASTE INTO THE ORIGINAL SHEET',
       '1. Select the data cells on the "Database" sheet here (A2 down to the last row, all columns) and copy.',
       '2. In the original workbook, click the first empty row of the Database table.',
-      '3. Home → Paste → Paste Special… → tick "Skip blanks" → OK.',
+      '3. Press Ctrl+V (normal paste).',
       '',
-      'Why: the columns Day, Weekend, VALUE, TOT NO OF DWGS and Day Fraction are formulas in the original, so they are exported empty on purpose.',
-      '"Skip blanks" keeps your formulas instead of overwriting them with empty cells.',
+      'Day, Weekend, VALUE, TOT NO OF DWGS and Day Fraction are exported as formulas that only use the same row,',
+      'so they calculate correctly after pasting and do not link back to this file.',
+      'Note: the VALUE weights are built into the formula (same table as the Lists sheet at export time).',
       '',
-      'طريقة اللصق: انسخ الصفوف من تاب Database هنا ← في الشيت الأصلي اضغط أول صف فاضي في الجدول ← Paste Special ← Skip blanks.',
-      'أعمدة Day / Weekend / VALUE / TOT NO OF DWGS / Day Fraction سايبينها فاضية عمدًا عشان الفورمولا اللي في الشيت الأصلي متتمسحش.'
+      'طريقة اللصق: انسخ الصفوف من تاب Database هنا ← في الشيت الأصلي اضغط أول صف فاضي في الجدول ← Ctrl+V عادي.',
+      'أعمدة Day / Weekend / VALUE / TOT NO OF DWGS / Day Fraction بتتحسب لوحدها بعد اللصق ومش بتعمل link للملف ده.'
     ].forEach(t=> ws.addRow([t]));
     ws.getRow(1).font = {bold:true};
     ws.getRow(3).font = {bold:true};
