@@ -1175,7 +1175,7 @@ app.post('/api/members', requireAuth, requireOwner, async (req, res) => {
       const lead = isViewer ? false : !!isTeamLead;
       newMember = {
         id: genId('m'), name, username: username.trim(), passwordHash: hash,
-        teamId: teamId || '', color: COLORS[rows.length % COLORS.length],
+        teamId: isViewer ? '' : (teamId || ''), color: COLORS[rows.length % COLORS.length],
         isTeamLead: lead, isSenior: (isViewer || lead) ? false : !!isSenior, isViewer: !!isViewer,
         reportsTo: (isViewer || isTeamLead) ? '' : (reportsTo || ''), email: (email || '').trim(),
         managedMemberIds: []
@@ -1202,6 +1202,7 @@ app.put('/api/members/:id', requireAuth, requireOwner, async (req, res) => {
       if (password) m.passwordHash = await bcrypt.hash(password, 10);
       if (teamId) m.teamId = teamId;
       m.isViewer = !!isViewer;
+      if (m.isViewer) m.teamId = ''; // a viewer isn't on any team — they have their own sidebar section
       m.isTeamLead = m.isViewer ? false : !!isTeamLead;
       m.isSenior = (m.isViewer || m.isTeamLead) ? false : !!isSenior;
       m.reportsTo = (m.isViewer || m.isTeamLead) ? '' : (reportsTo || '');

@@ -698,7 +698,7 @@
 
       const wrap = document.createElement('div');
       wrap.className = 'team-members';
-      const teamMembers = state.members.filter(m=>m.teamId===team.id);
+      const teamMembers = state.members.filter(m=>m.teamId===team.id && !m.isViewer); // viewers have their own section below — one that also carries a teamId must not be listed twice
       if(teamMembers.length===0){
         const empty = document.createElement('div');
         empty.style.cssText = 'font-size:11px;color:var(--text-dim-on-ink);padding:4px 8px;';
@@ -844,10 +844,12 @@
     const name = document.getElementById('mmName').value.trim();
     const username = document.getElementById('mmUsername').value.trim();
     const password = document.getElementById('mmPassword').value;
-    const teamId = document.getElementById('mmTeam').value;
     const isTeamLead = document.getElementById('mmLead').checked;
     const isSeniorAccount = document.getElementById('mmSenior').checked;
     const isViewerAccount = document.getElementById('mmViewer').checked;
+    // The team dropdown is hidden for a viewer but still holds its default (the first team) — sending that
+    // would file the viewer under a team as well as under "Viewers".
+    const teamId = isViewerAccount ? '' : document.getElementById('mmTeam').value;
     const email = document.getElementById('mmEmail').value.trim();
     if(!name || !username) return;
     if(!id && !password){ alert('Set a password for the new member.'); return; }
