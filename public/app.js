@@ -3555,12 +3555,13 @@
   // ---------- PC PASSWORD ----------
   // Each person's own device logins (see the PC PASSWORDS section of
   // server.js — the server only ever returns the caller's own rows, stored
-  // encrypted). Passwords stay masked until "Show" is pressed and are
+  // encrypted; the owner also gets everyone's, read-only). Passwords stay masked until "Show" is pressed and are
   // dropped from memory/DOM on logout. Loaded fresh each time the tab is
   // opened, and NOT rebuilt by the 8s poll, so a half-typed form survives.
   let pcItems = [];
   let pcLoaded = false;
   let pcLoading = false;
+  let pcCanSeeAll = false; // owner: also gets everyone else's entries (read-only)
   let pcEditId = null; // id being edited, 'new' for the add form, null for none
   const pcShown = new Set();
 
@@ -3575,6 +3576,7 @@
     try{
       const data = await api('GET', '/api/pc-passwords');
       pcItems = data.items || [];
+      pcCanSeeAll = !!data.canSeeAll;
       pcLoaded = true;
       renderPcPassword();
     }catch(e){
@@ -3599,10 +3601,14 @@
 
   function renderPcPassword(){
     const el = document.getElementById('pcPasswordView');
-    const rows = pcItems.map(it=>{
+    const mineItems = pcItems.filter(it=> it.mine!==false);
+    const othersByPerson = {};
+    pcItems.filter(it=> it.mine===false).forEach(it=>{ (othersByPerson[it.ownerName] = othersByPerson[it.ownerName] || []).push(it); });
+    const itemHtml = it=>{
       if(pcEditId===it.id) return `<div class="pc-item">${pcFormHtml(it)}</div>`;
+      const mine = it.mine!==false;
       const shown = pcShown.has(it.id);
-      const pw = it.password==null ? '<span class="pc-bad">Can\'t be decrypted (server key changed) — edit to set it again</span>'
+      const pw = it.password==null ? '<span class="pc-bad">Can\'t be decrypted (server key changed)'+(mine?' — edit to set it again':' — they need to set it again')+'</span>'
         : `<span class="pc-pw ${shown?'':'masked'}">${shown ? escapeHtml(it.password) : '••••••••••'}</span>`;
       return `<div class="pc-item" data-id="${escAttr(it.id)}">
         <div class="pc-main">
@@ -3612,16 +3618,23 @@
         </div>
         <div class="pc-btns">
           ${it.password==null ? '' : `<button type="button" class="ghost-btn" data-act="show">${shown?'Hide':'Show'}</button><button type="button" class="ghost-btn" data-act="copy">Copy</button>`}
-          <button type="button" class="ghost-btn" data-act="edit">Edit</button>
-          <button type="button" class="ghost-btn" data-act="del">Delete</button>
+          ${mine ? '<button type="button" class="ghost-btn" data-act="edit">Edit</button><button type="button" class="ghost-btn" data-act="del">Delete</button>' : ''}
         </div>
       </div>`;
-    }).join('');
+    };
+    const rows = mineItems.map(itemHtml).join('');
+    const othersHtml = Object.keys(othersByPerson).sort((a,b)=>a.localeCompare(b)).map(name=>
+      `<div class="pc-person">${escapeHtml(name)}</div>${othersByPerson[name].map(itemHtml).join('')}`).join('');
+    const hint = pcCanSeeAll
+      ? 'Your own devices are below, followed by every team member\'s (read-only). Each person can see their own; as owner you can see all. Stored encrypted, never in plain text.'
+      : 'Your own device passwords — <b>only you and the owner can see them</b>. They\'re stored encrypted, never in plain text.';
     el.innerHTML = `<div class="dash-card">
-      <div class="dr-hint">Your own device passwords — <b>only you can see them</b> (not the owner, not your team lead). They're stored encrypted, never in plain text.</div>
+      <div class="dr-hint">${hint}</div>
+      ${pcCanSeeAll ? '<div class="pc-person">Your devices</div>' : ''}
       ${rows || (pcEditId==='new' ? '' : '<div class="notif-empty">No devices saved yet.</div>')}
       ${pcEditId==='new' ? `<div class="pc-item">${pcFormHtml(null)}</div>` : ''}
       ${pcEditId===null ? '<button type="button" class="primary-btn" id="pcAddBtn" style="margin-top:12px;">+ Add device</button>' : ''}
+      ${othersHtml}
     </div>`;
     wirePcPassword();
   }

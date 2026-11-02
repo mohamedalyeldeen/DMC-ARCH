@@ -583,8 +583,9 @@ app.put('/api/daily-report', requireAuth, async (req, res) => {
 });
 
 // ---------- PC PASSWORDS (each person's own device logins) ----------
-// Strictly private: every endpoint only ever touches the caller's own rows,
-// including for the owner. Passwords are stored encrypted (lib/vault.js) and
+// Everyone reads and manages only their own rows — except the owner, who can
+// additionally READ everyone's (read-only: others' entries can't be changed
+// or deleted by the owner). Passwords are stored encrypted (lib/vault.js) and
 // are NOT part of /api/state or the backup export. Viewers have no access.
 const MAX_PCS_PER_USER = 10;
 const pcUserId = req => req.user.id || 'owner';
@@ -599,9 +600,20 @@ function cleanPcField(v, max, label, required) {
 app.get('/api/pc-passwords', requireAuth, async (req, res) => {
   try {
     if (req.user.isViewer) throw new Error('FORBIDDEN');
-    const rows = (await readTab('PCPasswords').catch(() => [])).filter(r => r.userId === pcUserId(req));
+    const me = pcUserId(req);
+    const isOwner = req.user.role === 'owner';
+    let rows = await readTab('PCPasswords').catch(() => []);
+    if (!isOwner) rows = rows.filter(r => r.userId === me);
+    const names = {};
+    if (isOwner) (await readTab('Members')).forEach(m => { names[m.id] = m.name; });
     res.set('Cache-Control', 'no-store');
-    res.json({ items: rows.map(r => ({ id: r.id, pcName: r.pcName, username: r.username, password: vault.decrypt(r.passwordEnc), updatedAt: r.updatedAt })) });
+    res.json({
+      canSeeAll: isOwner,
+      items: rows.map(r => ({
+        id: r.id, pcName: r.pcName, username: r.username, password: vault.decrypt(r.passwordEnc), updatedAt: r.updatedAt,
+        mine: r.userId === me, ownerName: r.userId === me ? 'You' : (names[r.userId] || 'Former member')
+      }))
+    });
   } catch (e) { sendErr(res, e); }
 });
 

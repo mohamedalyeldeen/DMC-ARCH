@@ -630,3 +630,4 @@ input.date-invalid{border-color:var(--rust) !important;}
 .pc-form{display:flex;flex-wrap:wrap;gap:8px;width:100%;align-items:center;}
 .pc-form input{flex:1 1 180px;padding:8px 10px;border-radius:3px;border:1px solid var(--line-on-ink);background:var(--ink);color:var(--text-on-ink);font-size:13px;font-family:inherit;}
 .pc-form input:focus{outline:none;border-color:var(--amber);}
+.pc-person{margin-top:18px;padding-top:4px;font-family:'IBM Plex Mono',monospace;font-size:10.5px;letter-spacing:.8px;text-transform:uppercase;color:var(--amber);border-bottom:1px solid var(--line-on-ink);padding-bottom:6px;}
