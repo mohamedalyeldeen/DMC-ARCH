@@ -219,6 +219,7 @@
     clearUndo();
     capacityLoaded = false;
     capacityData = [];
+    clearPcPasswords(); // next login must not see the previous person's device passwords
     drLoadedKey = null; drRows = []; drMemberId = null; drDirty = false; drMode = 'daily'; alLoadedKey = null; alData = null; // next login must not see the previous person's report
     closeChatFloat();
     document.getElementById('chatBubbleBtn').style.display = 'none';
@@ -363,6 +364,7 @@
     renderChatBadge();
     renderSidebar();
     document.getElementById('tabCapacityBtn').style.display = isLeaderLike() ? 'inline-block' : 'none';
+    document.getElementById('tabPcPasswordBtn').style.display = isViewer() ? 'none' : 'inline-block';
     document.getElementById('myStatsBtn').style.display = (isOwner() || isViewer()) ? 'none' : 'inline-block';
     document.getElementById('board').style.display='none';
     document.getElementById('doneFilterBar').style.display='none';
@@ -372,6 +374,7 @@
     document.getElementById('prodDashboardView').style.display='none';
     document.getElementById('projectProgressView').style.display='none';
     document.getElementById('dailyReportView').style.display='none';
+    document.getElementById('pcPasswordView').style.display='none';
     document.getElementById('capacityView').style.display='none';
     document.getElementById('bulkAssignBtn').style.display='none';
     document.getElementById('dueTodayBtn').style.display='none';
@@ -414,6 +417,11 @@
       document.getElementById('dailyReportView').style.display='block';
       document.getElementById('newTaskBtn').style.display='none';
       renderDailyReportTab();
+    } else if(activeTab==='pcPassword'){
+      document.getElementById('viewTitle').textContent = 'PC Password';
+      document.getElementById('pcPasswordView').style.display='block';
+      document.getElementById('newTaskBtn').style.display='none';
+      renderPcPasswordTab();
     } else {
       document.getElementById('viewTitle').textContent = 'Capacity';
       document.getElementById('capacityView').style.display='block';
@@ -526,9 +534,10 @@
     catch(e){ alert(e.message); }
   });
 
-  const ALL_TAB_BTNS = ['tabBoardBtn','tabGanttBtn','tabDashBtn','tabLogBtn','tabProdDashBtn','tabProjectProgressBtn','tabDailyReportBtn','tabCapacityBtn'];
+  const ALL_TAB_BTNS = ['tabBoardBtn','tabGanttBtn','tabDashBtn','tabLogBtn','tabProdDashBtn','tabProjectProgressBtn','tabDailyReportBtn','tabPcPasswordBtn','tabCapacityBtn'];
   function activateTab(name, btnId){
     activeTab = name;
+    pcShown.clear(); // revealed passwords re-mask whenever the tab changes
     ALL_TAB_BTNS.forEach(id=> document.getElementById(id).classList.toggle('active', id===btnId));
     closeSidebarDrawer(); // no-op on desktop; on mobile the sidebar is an overlay, so switching views should hide it
     renderApp();
@@ -542,7 +551,7 @@
   // on every ~8s poll, so animating the elements directly would replay the
   // whole entrance (and flicker) every few seconds. See the Motion section
   // of styles.css.
-  const VIEW_IDS = ['board','ganttView','dashboardView','logView','prodDashboardView','projectProgressView','dailyReportView','capacityView'];
+  const VIEW_IDS = ['board','ganttView','dashboardView','logView','prodDashboardView','projectProgressView','dailyReportView','pcPasswordView','capacityView'];
   const COUNT_SELECTOR = '.dash-stat .num, .prod-rate, .donut-center-num, .capacity-pct-label';
   let enterUntil = 0;
   let enterTimer = null;
@@ -627,6 +636,7 @@
   document.getElementById('tabProdDashBtn').addEventListener('click', ()=> activateTab('proddash','tabProdDashBtn'));
   document.getElementById('tabProjectProgressBtn').addEventListener('click', ()=> activateTab('projectProgress','tabProjectProgressBtn'));
   document.getElementById('tabDailyReportBtn').addEventListener('click', ()=> activateTab('dailyReport','tabDailyReportBtn'));
+  document.getElementById('tabPcPasswordBtn').addEventListener('click', ()=>{ pcLoaded = false; activateTab('pcPassword','tabPcPasswordBtn'); });
   document.getElementById('tabCapacityBtn').addEventListener('click', ()=> activateTab('capacity','tabCapacityBtn'));
 
   function renderStats(){
@@ -3540,6 +3550,117 @@
       }
     }catch(e){ alert(e.message); }
     finally{ btn.disabled = false; btn.textContent = label; }
+  }
+
+  // ---------- PC PASSWORD ----------
+  // Each person's own device logins (see the PC PASSWORDS section of
+  // server.js — the server only ever returns the caller's own rows, stored
+  // encrypted). Passwords stay masked until "Show" is pressed and are
+  // dropped from memory/DOM on logout. Loaded fresh each time the tab is
+  // opened, and NOT rebuilt by the 8s poll, so a half-typed form survives.
+  let pcItems = [];
+  let pcLoaded = false;
+  let pcLoading = false;
+  let pcEditId = null; // id being edited, 'new' for the add form, null for none
+  const pcShown = new Set();
+
+  function renderPcPasswordTab(){
+    if(pcLoaded || pcLoading) return;
+    loadPcPasswords();
+  }
+  async function loadPcPasswords(){
+    const el = document.getElementById('pcPasswordView');
+    pcLoading = true;
+    if(!el.innerHTML) el.innerHTML = skeletonHtml();
+    try{
+      const data = await api('GET', '/api/pc-passwords');
+      pcItems = data.items || [];
+      pcLoaded = true;
+      renderPcPassword();
+    }catch(e){
+      el.innerHTML = `<div class="dash-card"><div class="notif-empty">${escapeHtml(e.message)}</div></div>`;
+    }finally{ pcLoading = false; }
+  }
+  function clearPcPasswords(){
+    pcItems = []; pcLoaded = false; pcEditId = null; pcShown.clear();
+    document.getElementById('pcPasswordView').innerHTML = '';
+  }
+
+  function pcFormHtml(it){
+    const v = it || {pcName:'', username:'', password:''};
+    return `<form class="pc-form" id="pcForm" autocomplete="off">
+      <input type="text" id="pcNameInput" placeholder="PC name (e.g. DMC-PC-014)" maxlength="80" value="${escAttr(v.pcName)}" required>
+      <input type="text" id="pcUserInput" placeholder="Windows username" maxlength="80" value="${escAttr(v.username)}" autocomplete="off">
+      <input type="text" id="pcPwInput" placeholder="Password" maxlength="200" value="${escAttr(v.password||'')}" autocomplete="off" spellcheck="false" required>
+      <button type="submit" class="primary-btn" id="pcSaveBtn">Save</button>
+      <button type="button" class="ghost-btn" id="pcCancelBtn">Cancel</button>
+    </form>`;
+  }
+
+  function renderPcPassword(){
+    const el = document.getElementById('pcPasswordView');
+    const rows = pcItems.map(it=>{
+      if(pcEditId===it.id) return `<div class="pc-item">${pcFormHtml(it)}</div>`;
+      const shown = pcShown.has(it.id);
+      const pw = it.password==null ? '<span class="pc-bad">Can\'t be decrypted (server key changed) — edit to set it again</span>'
+        : `<span class="pc-pw ${shown?'':'masked'}">${shown ? escapeHtml(it.password) : '••••••••••'}</span>`;
+      return `<div class="pc-item" data-id="${escAttr(it.id)}">
+        <div class="pc-main">
+          <div class="pc-name">🖥 ${escapeHtml(it.pcName)}</div>
+          <div class="pc-meta">${it.username ? 'User: <b>'+escapeHtml(it.username)+'</b>' : '<span class="pc-dim">no username</span>'}</div>
+          <div class="pc-meta">Password: ${pw}</div>
+        </div>
+        <div class="pc-btns">
+          ${it.password==null ? '' : `<button type="button" class="ghost-btn" data-act="show">${shown?'Hide':'Show'}</button><button type="button" class="ghost-btn" data-act="copy">Copy</button>`}
+          <button type="button" class="ghost-btn" data-act="edit">Edit</button>
+          <button type="button" class="ghost-btn" data-act="del">Delete</button>
+        </div>
+      </div>`;
+    }).join('');
+    el.innerHTML = `<div class="dash-card">
+      <div class="dr-hint">Your own device passwords — <b>only you can see them</b> (not the owner, not your team lead). They're stored encrypted, never in plain text.</div>
+      ${rows || (pcEditId==='new' ? '' : '<div class="notif-empty">No devices saved yet.</div>')}
+      ${pcEditId==='new' ? `<div class="pc-item">${pcFormHtml(null)}</div>` : ''}
+      ${pcEditId===null ? '<button type="button" class="primary-btn" id="pcAddBtn" style="margin-top:12px;">+ Add device</button>' : ''}
+    </div>`;
+    wirePcPassword();
+  }
+
+  function wirePcPassword(){
+    const el = document.getElementById('pcPasswordView');
+    const add = document.getElementById('pcAddBtn');
+    if(add) add.addEventListener('click', ()=>{ pcEditId='new'; renderPcPassword(); document.getElementById('pcNameInput').focus(); });
+    const form = document.getElementById('pcForm');
+    if(form){
+      document.getElementById('pcCancelBtn').addEventListener('click', ()=>{ pcEditId=null; renderPcPassword(); });
+      form.addEventListener('submit', async (e)=>{
+        e.preventDefault();
+        const body = {pcName:document.getElementById('pcNameInput').value, username:document.getElementById('pcUserInput').value, password:document.getElementById('pcPwInput').value};
+        const btn = document.getElementById('pcSaveBtn'); btn.disabled = true;
+        try{
+          if(pcEditId==='new') await api('POST', '/api/pc-passwords', body);
+          else await api('PUT', '/api/pc-passwords/'+encodeURIComponent(pcEditId), body);
+          pcEditId = null; pcLoaded = false; await loadPcPasswords();
+        }catch(err){ alert(err.message); btn.disabled = false; }
+      });
+    }
+    el.querySelectorAll('.pc-item[data-id]').forEach(row=>{
+      const id = row.dataset.id;
+      const it = pcItems.find(x=>x.id===id);
+      row.querySelectorAll('[data-act]').forEach(b=> b.addEventListener('click', async ()=>{
+        const act = b.dataset.act;
+        if(act==='show'){ pcShown.has(id) ? pcShown.delete(id) : pcShown.add(id); renderPcPassword(); }
+        else if(act==='edit'){ pcEditId = id; renderPcPassword(); document.getElementById('pcPwInput').focus(); }
+        else if(act==='copy'){
+          try{ await navigator.clipboard.writeText(it.password); b.textContent = 'Copied ✓'; setTimeout(()=>{ b.textContent='Copy'; }, 1500); }
+          catch(e){ alert('Couldn\'t copy — press Show and copy it manually.'); }
+        } else if(act==='del'){
+          if(!confirm('Delete "'+it.pcName+'"?')) return;
+          try{ await api('DELETE', '/api/pc-passwords/'+encodeURIComponent(id)); pcShown.delete(id); pcLoaded = false; await loadPcPasswords(); }
+          catch(err){ alert(err.message); }
+        }
+      }));
+    });
   }
 
   // ---------- REPORTS › ALLOCATION ----------

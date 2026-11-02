@@ -615,3 +615,18 @@ input.date-invalid{border-color:var(--rust) !important;}
 .al-check{display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--text-dim-on-ink);cursor:pointer;}
 .al-low-note{color:var(--amber);font-weight:600;}
 .al-high-note{color:#E58C72;font-weight:600;}
+
+/* ── PC Password tab ── */
+.pc-item{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;padding:12px 0;border-bottom:1px solid var(--line-on-ink);}
+.pc-item:last-of-type{border-bottom:none;}
+.pc-name{font-weight:600;color:var(--text-on-ink);margin-bottom:4px;}
+.pc-meta{font-size:12.5px;color:var(--text-dim-on-ink);line-height:1.7;}
+.pc-meta b{color:var(--text-on-ink);}
+.pc-pw{font-family:'IBM Plex Mono',monospace;color:var(--text-on-ink);user-select:all;}
+.pc-pw.masked{user-select:none;letter-spacing:1px;}
+.pc-dim{opacity:.7;}
+.pc-bad{color:var(--amber);}
+.pc-btns{display:flex;gap:6px;flex-wrap:wrap;}
+.pc-form{display:flex;flex-wrap:wrap;gap:8px;width:100%;align-items:center;}
+.pc-form input{flex:1 1 180px;padding:8px 10px;border-radius:3px;border:1px solid var(--line-on-ink);background:var(--ink);color:var(--text-on-ink);font-size:13px;font-family:inherit;}
+.pc-form input:focus{outline:none;border-color:var(--amber);}

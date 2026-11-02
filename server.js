@@ -10,6 +10,7 @@ const { sendMail, taskAssignedEmail } = require('./lib/mailer');
 const scheduler = require('./lib/scheduler');
 const achievements = require('./lib/achievements');
 const dailyReport = require('./lib/dailyReport');
+const vault = require('./lib/vault');
 
 const app = express();
 app.use(cors());
@@ -578,6 +579,76 @@ app.put('/api/daily-report', requireAuth, async (req, res) => {
     });
     dailyReportsReader.invalidate();
     res.json({ saved: clean.length });
+  } catch (e) { sendErr(res, e); }
+});
+
+// ---------- PC PASSWORDS (each person's own device logins) ----------
+// Strictly private: every endpoint only ever touches the caller's own rows,
+// including for the owner. Passwords are stored encrypted (lib/vault.js) and
+// are NOT part of /api/state or the backup export. Viewers have no access.
+const MAX_PCS_PER_USER = 10;
+const pcUserId = req => req.user.id || 'owner';
+
+function cleanPcField(v, max, label, required) {
+  const s = String(v == null ? '' : v).trim();
+  if (required && !s) { const err = new Error('BAD_REQUEST'); err.userMessage = `${label} is required.`; throw err; }
+  if (s.length > max) { const err = new Error('BAD_REQUEST'); err.userMessage = `${label} is too long (max ${max} characters).`; throw err; }
+  return s;
+}
+
+app.get('/api/pc-passwords', requireAuth, async (req, res) => {
+  try {
+    if (req.user.isViewer) throw new Error('FORBIDDEN');
+    const rows = (await readTab('PCPasswords').catch(() => [])).filter(r => r.userId === pcUserId(req));
+    res.set('Cache-Control', 'no-store');
+    res.json({ items: rows.map(r => ({ id: r.id, pcName: r.pcName, username: r.username, password: vault.decrypt(r.passwordEnc), updatedAt: r.updatedAt })) });
+  } catch (e) { sendErr(res, e); }
+});
+
+app.post('/api/pc-passwords', requireAuth, async (req, res) => {
+  try {
+    if (req.user.isViewer) throw new Error('FORBIDDEN');
+    const pcName = cleanPcField(req.body.pcName, 80, 'PC name', true);
+    const username = cleanPcField(req.body.username, 80, 'Username', false);
+    const password = cleanPcField(req.body.password, 200, 'Password', true);
+    const id = genId('pc');
+    const uid = pcUserId(req);
+    await updateTab('PCPasswords', existing => {
+      if (existing.filter(r => r.userId === uid).length >= MAX_PCS_PER_USER) {
+        const err = new Error('BAD_REQUEST'); err.userMessage = `You can store up to ${MAX_PCS_PER_USER} devices.`; throw err;
+      }
+      return existing.concat([{ id, userId: uid, pcName, username, passwordEnc: vault.encrypt(password), updatedAt: new Date().toISOString() }]);
+    });
+    res.json({ id });
+  } catch (e) { sendErr(res, e); }
+});
+
+app.put('/api/pc-passwords/:id', requireAuth, async (req, res) => {
+  try {
+    if (req.user.isViewer) throw new Error('FORBIDDEN');
+    const pcName = cleanPcField(req.body.pcName, 80, 'PC name', true);
+    const username = cleanPcField(req.body.username, 80, 'Username', false);
+    const password = cleanPcField(req.body.password, 200, 'Password', true);
+    const uid = pcUserId(req);
+    await updateTab('PCPasswords', existing => {
+      const row = existing.find(r => r.id === req.params.id && r.userId === uid);
+      if (!row) throw new Error('NOT_FOUND');
+      Object.assign(row, { pcName, username, passwordEnc: vault.encrypt(password), updatedAt: new Date().toISOString() });
+      return existing;
+    });
+    res.json({ ok: true });
+  } catch (e) { sendErr(res, e); }
+});
+
+app.delete('/api/pc-passwords/:id', requireAuth, async (req, res) => {
+  try {
+    if (req.user.isViewer) throw new Error('FORBIDDEN');
+    const uid = pcUserId(req);
+    await updateTab('PCPasswords', existing => {
+      if (!existing.some(r => r.id === req.params.id && r.userId === uid)) throw new Error('NOT_FOUND');
+      return existing.filter(r => r.id !== req.params.id);
+    });
+    res.json({ ok: true });
   } catch (e) { sendErr(res, e); }
 });
 
