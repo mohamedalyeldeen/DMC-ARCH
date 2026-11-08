@@ -4,7 +4,7 @@ const cors = require('cors');
 const bcrypt = require('bcryptjs');
 const crypto = require('crypto');
 const path = require('path');
-const { readTab, readTabsBatch, updateTab, getConfig, setConfig } = require('./lib/sheets');
+const { readTab, readTabsBatch, readTabsBatchCached, updateTab, getConfig, setConfig } = require('./lib/sheets');
 const { sign, requireAuth, requireLeader, requireOwner, requireAssigner, isLeader, isTeamWide } = require('./lib/auth');
 const { sendMail, taskAssignedEmail } = require('./lib/mailer');
 const scheduler = require('./lib/scheduler');
@@ -1095,7 +1095,7 @@ app.get('/api/state', requireAuth, async (req, res) => {
     try {
       const [teams, batch] = await Promise.all([
         getTeamsCached(),
-        readTabsBatch(['Members', 'Tasks', 'Notifications', 'Achievements'])
+        readTabsBatchCached(['Members', 'Tasks', 'Notifications', 'Achievements'], 4000)
       ]);
       teamsAll = teams;
       membersRaw = batch.Members;
