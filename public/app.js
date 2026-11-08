@@ -3201,7 +3201,7 @@
     const firstStatusByDate = {};
     drRows.forEach(r=>{ if(r.date && !(r.date in firstStatusByDate)) firstStatusByDate[r.date] = r.status; });
     const counts = {};
-    Object.values(firstStatusByDate).forEach(s=>{ counts[s] = (counts[s]||0)+1; });
+    Object.values(firstStatusByDate).forEach(s=>{ if(s) counts[s] = (counts[s]||0)+1; });
     const totalDwgs = drRows.reduce((s,r)=> s + (Number(r.numDwgs)||0), 0);
     const totalWeighted = Math.round(drRows.reduce((s,r)=> s + (Number(drTot(r))||0), 0)*1000)/1000;
     const hours = drRows.reduce((s,r)=> s + (Number(r.normalHours)||0), 0);

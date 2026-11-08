@@ -631,3 +631,12 @@ input.date-invalid{border-color:var(--rust) !important;}
 .pc-form input{flex:1 1 180px;padding:8px 10px;border-radius:3px;border:1px solid var(--line-on-ink);background:var(--ink);color:var(--text-on-ink);font-size:13px;font-family:inherit;}
 .pc-form input:focus{outline:none;border-color:var(--amber);}
 .pc-person{margin-top:18px;padding-top:4px;font-family:'IBM Plex Mono',monospace;font-size:10.5px;letter-spacing:.8px;text-transform:uppercase;color:var(--amber);border-bottom:1px solid var(--line-on-ink);padding-bottom:6px;}
+
+/* Daily Report scrollbars: the default dark-on-dark thumb was invisible, so
+   these get an amber thumb on a lighter track. */
+.dr-hscroll-top,.dr-table-wrap{scrollbar-color:var(--amber) var(--ink-3);scrollbar-width:auto;}
+.dr-hscroll-top::-webkit-scrollbar,.dr-table-wrap::-webkit-scrollbar{height:14px;width:14px;}
+.dr-hscroll-top::-webkit-scrollbar-track,.dr-table-wrap::-webkit-scrollbar-track{background:var(--ink-3);border-radius:7px;}
+.dr-hscroll-top::-webkit-scrollbar-thumb,.dr-table-wrap::-webkit-scrollbar-thumb{background:var(--amber);border-radius:7px;border:2px solid var(--ink-3);}
+.dr-hscroll-top::-webkit-scrollbar-thumb:hover,.dr-table-wrap::-webkit-scrollbar-thumb:hover{background:var(--amber-dim);}
+.dr-hscroll-top{height:18px;}
