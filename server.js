@@ -689,7 +689,7 @@ async function findGame(id, fresh) {
 }
 
 function gameHead(g) {
-  return { id: g.id, title: g.title, prize: g.prize, status: g.status, questionCount: g.questions.length, openedAt: g.openedAt, closedAt: g.closedAt, winnerName: g.winnerName };
+  return { id: g.id, title: g.title, prize: g.prize, status: g.status, questionCount: g.questions.length, openedAt: g.openedAt, closedAt: g.closedAt, winnerName: g.winnerName, settings: gamesLib.settingsOf(g) };
 }
 
 function cleanGameFields(body) {
@@ -720,7 +720,7 @@ app.get('/api/games', requireAuth, async (req, res) => {
       });
     }).sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''));
     res.set('Cache-Control', 'no-store');
-    res.json({ canHost: host, canPlay: canPlayGames(req), secondsPerQuestion: gamesLib.SECONDS_PER_QUESTION, minQuestions: gamesLib.MIN_QUESTIONS, maxQuestions: gamesLib.MAX_QUESTIONS, games: list });
+    res.json({ canHost: host, canPlay: canPlayGames(req), defaults: gamesLib.DEFAULT_SETTINGS, limits: { minSeconds: gamesLib.MIN_SECONDS, maxSeconds: gamesLib.MAX_SECONDS, maxQuestions: gamesLib.ABS_MAX_QUESTIONS }, games: list });
   } catch (e) { sendErr(res, e); }
 });
 
@@ -755,9 +755,10 @@ app.post('/api/games', requireAuth, async (req, res) => {
   try {
     if (!isGameHost(req)) throw new Error('FORBIDDEN');
     const { title, prize } = cleanGameFields(req.body);
-    const questions = gamesLib.normalizeQuestions(req.body.questions || [], genId);
+    const settings = gamesLib.normalizeSettings(req.body.settings);
+    const questions = gamesLib.normalizeQuestions(req.body.questions || [], genId, settings);
     const id = genId('g');
-    await updateTab('Games', rows => rows.concat([{ id, title, prize, status: 'draft', questions, createdAt: new Date().toISOString(), openedAt: '', closedAt: '', winnerName: '' }]));
+    await updateTab('Games', rows => rows.concat([{ id, title, prize, status: 'draft', questions, settings, createdAt: new Date().toISOString(), openedAt: '', closedAt: '', winnerName: '' }]));
     invalidateGames();
     res.json({ id });
   } catch (e) { sendErr(res, e); }
@@ -767,12 +768,13 @@ app.put('/api/games/:id', requireAuth, async (req, res) => {
   try {
     if (!isGameHost(req)) throw new Error('FORBIDDEN');
     const { title, prize } = cleanGameFields(req.body);
-    const questions = gamesLib.normalizeQuestions(req.body.questions || [], genId);
+    const settings = gamesLib.normalizeSettings(req.body.settings);
+    const questions = gamesLib.normalizeQuestions(req.body.questions || [], genId, settings);
     await updateTab('Games', rows => {
       const g = rows.find(r => r.id === req.params.id);
       if (!g) throw new Error('NOT_FOUND');
-      if (g.status !== 'draft') throw gamesLib.fail('Only a draft game can be edited — questions are locked once it is opened.');
-      Object.assign(g, { title, prize, questions });
+      if (g.status !== 'draft') throw gamesLib.fail('Only a draft game can be edited — its questions and settings are locked once it is opened.');
+      Object.assign(g, { title, prize, questions, settings });
       return rows;
     });
     invalidateGames();
@@ -793,7 +795,7 @@ app.post('/api/games/:id/status', requireAuth, async (req, res) => {
       if (!g) throw new Error('NOT_FOUND');
       if (next === 'open') {
         if (g.status !== 'draft') throw gamesLib.fail('Only a draft game can be opened.');
-        gamesLib.assertCanOpen(g.questions);
+        gamesLib.assertCanOpen(g.questions, gamesLib.settingsOf(g));
         g.status = 'open';
         g.openedAt = new Date().toISOString();
       } else {
@@ -871,7 +873,7 @@ app.post('/api/games/:id/start', requireAuth, async (req, res) => {
     res.json({
       token: gamesLib.signState({ p: playId, g: g.id, u: req.user.id, i: 0, at: now, a: [] }),
       issuedAt: now, serverNow: now, index: 0, total: g.questions.length,
-      secondsPerQuestion: gamesLib.SECONDS_PER_QUESTION, question: gamesLib.publicQuestion(g.questions[0])
+      secondsPerQuestion: gamesLib.questionSeconds(g.questions[0], gamesLib.settingsOf(g)), question: gamesLib.publicQuestion(g.questions[0])
     });
   } catch (e) { sendErr(res, e); }
 });
@@ -889,12 +891,14 @@ app.post('/api/games/:id/answer', requireAuth, async (req, res) => {
     const q = g.questions[st.i];
     if (!q || st.a.length !== st.i) throw gamesLib.fail('This game session is not valid.');
     const now = Date.now();
-    const answers = st.a.concat([gamesLib.recordAnswer(q, now - st.at, req.body)]);
+    const settings = gamesLib.settingsOf(g);
+    const answers = st.a.concat([gamesLib.recordAnswer(q, now - st.at, req.body, settings)]);
     if (st.i + 1 < g.questions.length) {
       const nextQ = g.questions[st.i + 1];
       return res.json({
         done: false, token: gamesLib.signState({ p: st.p, g: st.g, u: st.u, i: st.i + 1, at: now, a: answers }),
-        issuedAt: now, serverNow: now, index: st.i + 1, total: g.questions.length, question: gamesLib.publicQuestion(nextQ)
+        issuedAt: now, serverNow: now, index: st.i + 1, total: g.questions.length,
+        secondsPerQuestion: gamesLib.questionSeconds(nextQ, settings), question: gamesLib.publicQuestion(nextQ)
       });
     }
     if (g.status === 'closed') throw gamesLib.fail('This game was closed before you finished, so your attempt was not counted.');

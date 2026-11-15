@@ -3712,6 +3712,7 @@
   function gmLoadProgress(id){ try{ return JSON.parse(localStorage.getItem(gmStoreKey(id)) || 'null'); }catch(e){ return null; } }
   function gmClearProgress(id){ try{ localStorage.removeItem(gmStoreKey(id)); }catch(e){} }
   const gmFmt = ms => { const s = Math.round((ms||0)/1000); return Math.floor(s/60) + ':' + String(s%60).padStart(2,'0'); };
+  const gmTimeText = s => s.textSeconds===s.seconds ? s.seconds + 's per question' : s.seconds + 's per question (' + s.textSeconds + 's for paragraph ones)';
   const gmMedal = r => r===1 ? '🥇' : r===2 ? '🥈' : r===3 ? '🥉' : String(r);
 
   function renderGamesTab(){
@@ -3762,7 +3763,7 @@
       return `<div class="gm-card">
         <div class="gm-card-main">
           <div class="gm-card-title">${escapeHtml(g.title)} ${gmBadge(g.status)}</div>
-          <div class="gm-meta">${g.questionCount} questions · ${d.secondsPerQuestion}s each${g.prize?' · 🎁 '+escapeHtml(g.prize):''}</div>
+          <div class="gm-meta">${g.questionCount} questions · ${gmTimeText(g.settings)}${g.prize?' · 🎁 '+escapeHtml(g.prize):''}</div>
           <div class="gm-chips">${status}${extra}</div>
         </div>
         <div class="gm-card-actions">${action}</div>
@@ -3772,7 +3773,7 @@
       <div class="gm-head">
         <div>
           <div class="gm-title">🎮 The Technical Games</div>
-          <div class="dr-hint" style="margin:4px 0 0;">Take a break from work: technical questions, ${d.secondsPerQuestion} seconds each, one attempt per game — the winner takes the prize.</div>
+          <div class="dr-hint" style="margin:4px 0 0;">Take a break from work: technical questions against the clock, one attempt per game — the winner takes the prize.</div>
         </div>
         ${d.canHost ? '<button type="button" class="primary-btn" data-gm="new">+ New game</button>' : ''}
       </div>
@@ -3857,7 +3858,7 @@
       <div class="gm-head">
         <div>
           <div class="gm-title">${escapeHtml(g.title)} ${gmBadge(g.status)}</div>
-          <div class="gm-meta">${g.questionCount} questions · ${gmData.secondsPerQuestion}s each${g.prize?' · 🎁 Prize: <b>'+escapeHtml(g.prize)+'</b>':''}</div>
+          <div class="gm-meta">${g.questionCount} questions · ${gmTimeText(g.settings)}${g.prize?' · 🎁 Prize: <b>'+escapeHtml(g.prize)+'</b>':''}</div>
         </div>
       </div>
       ${g.status==='closed' ? `<div class="gm-winner">🏆 ${g.winnerName?'Winner: <b>'+escapeHtml(g.winnerName)+'</b>'+(g.prize?' — wins '+escapeHtml(g.prize):''):'This game closed with no finishers.'}</div>` : ''}
@@ -3875,15 +3876,15 @@
   async function openGmEditor(id){
     if(id){
       const d = gmDetail && gmDetail.game.id===id ? gmDetail : await api('GET', '/api/games/' + encodeURIComponent(id));
-      gmEditor = {id, title:d.game.title, prize:d.game.prize||'', questions: JSON.parse(JSON.stringify(d.questions||[]))};
+      gmEditor = {id, title:d.game.title, prize:d.game.prize||'', settings:Object.assign({}, d.game.settings), questions: JSON.parse(JSON.stringify(d.questions||[]))};
     } else {
-      gmEditor = {id:null, title:'', prize:'', questions: []};
+      gmEditor = {id:null, title:'', prize:'', settings:Object.assign({}, gmData.defaults), questions: []};
     }
     gmScreen = 'editor';
     renderGmEditor();
   }
   function renderGmEditor(){
-    const e = gmEditor, el = gmEl(), min = gmData.minQuestions, max = gmData.maxQuestions;
+    const e = gmEditor, el = gmEl(), min = Number(e.settings.minQuestions), max = Number(e.settings.maxQuestions) || gmData.limits.maxQuestions;
     const n = e.questions.length;
     const qs = e.questions.map((q,i)=>{
       const opts = q.type==='mc' ? `<div class="gm-ed-opts">${q.options.map((o,oi)=>`<div class="gm-ed-opt">
@@ -3906,6 +3907,16 @@
         <input type="text" id="gmEdTitle" maxlength="80" placeholder="Game title (e.g. The Technical Games — Round 1)" value="${escAttr(e.title)}">
         <input type="text" id="gmEdPrize" maxlength="120" placeholder="Prize (e.g. Gift card)" value="${escAttr(e.prize)}">
       </div>
+      <div class="gm-settings">
+        <div class="gm-section-title" style="margin:0 0 8px;">Game settings</div>
+        <div class="gm-set-grid">
+          <label>Seconds per question<input type="number" id="gmSetSeconds" min="${gmData.limits.minSeconds}" max="${gmData.limits.maxSeconds}" value="${escAttr(e.settings.seconds)}"></label>
+          <label>Seconds per paragraph question<input type="number" id="gmSetTextSeconds" min="${gmData.limits.minSeconds}" max="${gmData.limits.maxSeconds}" value="${escAttr(e.settings.textSeconds)}"></label>
+          <label>Minimum questions to open<input type="number" id="gmSetMin" min="1" max="${gmData.limits.maxQuestions}" value="${escAttr(e.settings.minQuestions)}"></label>
+          <label>Maximum questions<input type="number" id="gmSetMax" min="1" max="${gmData.limits.maxQuestions}" value="${escAttr(e.settings.maxQuestions)}"></label>
+        </div>
+        <div class="dr-hint" style="margin:8px 0 0;">Time limits are ${gmData.limits.minSeconds}–${gmData.limits.maxSeconds} seconds (give paragraph answers longer). Settings and questions lock once the game is opened.</div>
+      </div>
       <div class="dr-hint">${n} question${n===1?'':'s'} — a game needs ${min}–${max} to be opened. Tick the radio next to the correct option of each multiple-choice question.</div>
       ${qs || '<div class="notif-empty">No questions yet.</div>'}
       <div class="gm-tools">
@@ -3920,7 +3931,7 @@
   // ----- playing -----
   async function gmStartPlay(id){
     const g = gmData.games.find(x=>x.id===id);
-    if(!confirm('Start "' + (g ? g.title : 'this game') + '"?\n\n' + (g ? g.questionCount : '') + ' questions, ' + gmData.secondsPerQuestion + ' seconds each. The clock keeps running if you leave, you can\'t pause, and you only get one attempt.')) return;
+    if(!confirm('Start "' + (g ? g.title : 'this game') + '"?\n\n' + (g ? g.questionCount : '') + ' questions, ' + (g ? gmTimeText(g.settings) : '') + '. The clock keeps running if you leave, you can\'t pause, and you only get one attempt.')) return;
     try{
       const r = await api('POST', '/api/games/' + encodeURIComponent(id) + '/start');
       gmPlay = gmPlayFrom(id, g ? g.title : '', r);
@@ -4019,6 +4030,12 @@
     const e = gmEditor;
     e.title = document.getElementById('gmEdTitle').value;
     e.prize = document.getElementById('gmEdPrize').value;
+    e.settings = {
+      seconds: document.getElementById('gmSetSeconds').value,
+      textSeconds: document.getElementById('gmSetTextSeconds').value,
+      minQuestions: document.getElementById('gmSetMin').value,
+      maxQuestions: document.getElementById('gmSetMax').value
+    };
   }
   function wireGames(){
     const el = gmEl();
@@ -4061,7 +4078,7 @@
     if(act==='saveEditor'){
       gmCollectEditor();
       b.disabled = true;
-      const payload = {title:ed.title, prize:ed.prize, questions:ed.questions};
+      const payload = {title:ed.title, prize:ed.prize, settings:ed.settings, questions:ed.questions};
       try{
         if(ed.id) await api('PUT', '/api/games/' + encodeURIComponent(ed.id), payload);
         else { const r = await api('POST', '/api/games', payload); ed.id = r.id; }
