@@ -719,3 +719,4 @@ input.date-invalid{border-color:var(--rust) !important;}
 .gm-set-grid label{display:flex;flex-direction:column;gap:4px;font-size:11.5px;color:var(--text-dim-on-ink);}
 .gm-set-grid input{padding:8px 10px;border-radius:3px;border:1px solid var(--line-on-ink);background:var(--ink);color:var(--text-on-ink);font-size:14px;font-family:inherit;box-sizing:border-box;width:100%;}
 .gm-set-grid input:focus{outline:none;border-color:var(--amber);}
+.gm-del:hover{border-color:var(--rust);color:#f0a08c;}

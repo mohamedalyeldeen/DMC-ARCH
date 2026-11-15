@@ -3750,7 +3750,8 @@
     const cards = d.games.map(g=>{
       const m = g.mine;
       let action = `<button type="button" class="ghost-btn" data-gm="view" data-id="${escAttr(g.id)}">${g.status==='draft'?'Edit / manage':'Leaderboard'}</button>`;
-      if(d.canPlay && g.status==='open' && !m) action = `<button type="button" class="primary-btn" data-gm="play" data-id="${escAttr(g.id)}">▶ Play now</button>` + action;
+      if(d.canHost) action += `<button type="button" class="ghost-btn gm-del" data-gm="delete" data-id="${escAttr(g.id)}" title="Delete this game">🗑 Delete</button>`;
+      if(d.canPlay && g.status==='open' && !m) action =`<button type="button" class="primary-btn" data-gm="play" data-id="${escAttr(g.id)}">▶ Play now</button>` + action;
       if(d.canPlay && g.status==='open' && m && m.state==='started'){
         action = (gmLoadProgress(g.id)
           ? `<button type="button" class="primary-btn" data-gm="resume" data-id="${escAttr(g.id)}">▶ Resume</button>`
@@ -4104,8 +4105,11 @@
       return;
     }
     if(act==='delete'){
-      const g = gmDetail.game;
-      if(!confirm('Delete "' + g.title + '" and every player\'s result? This can\'t be undone.')) return;
+      // From the list the button carries the game id; on a game's own page it's the open game.
+      const g = id ? gmData.games.find(x=>x.id===id) : gmDetail.game;
+      if(!g) return;
+      const live = g.status==='open' ? '\n\nIt is open right now — anyone playing it will lose their attempt.' : '';
+      if(!confirm('Delete "' + g.title + '" and every player\'s result? This can\'t be undone.' + live)) return;
       try{ await api('DELETE', '/api/games/' + encodeURIComponent(g.id)); gmGoList(); }catch(e){ alert(e.message); }
       return;
     }
