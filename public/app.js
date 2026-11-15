@@ -219,6 +219,7 @@
     clearUndo();
     capacityLoaded = false;
     capacityData = [];
+    clearGames();
     clearPcPasswords(); // next login must not see the previous person's device passwords
     drLoadedKey = null; drRows = []; drMemberId = null; drDirty = false; drMode = 'daily'; alLoadedKey = null; alData = null; // next login must not see the previous person's report
     closeChatFloat();
@@ -365,6 +366,7 @@
     renderSidebar();
     document.getElementById('tabCapacityBtn').style.display = isLeaderLike() ? 'inline-block' : 'none';
     document.getElementById('tabPcPasswordBtn').style.display = isViewer() ? 'none' : 'inline-block';
+    document.getElementById('tabGamesBtn').style.display = isViewer() ? 'none' : 'inline-block';
     document.getElementById('myStatsBtn').style.display = (isOwner() || isViewer()) ? 'none' : 'inline-block';
     document.getElementById('board').style.display='none';
     document.getElementById('doneFilterBar').style.display='none';
@@ -375,6 +377,7 @@
     document.getElementById('projectProgressView').style.display='none';
     document.getElementById('dailyReportView').style.display='none';
     document.getElementById('pcPasswordView').style.display='none';
+    document.getElementById('gamesView').style.display='none';
     document.getElementById('capacityView').style.display='none';
     document.getElementById('bulkAssignBtn').style.display='none';
     document.getElementById('dueTodayBtn').style.display='none';
@@ -422,6 +425,11 @@
       document.getElementById('pcPasswordView').style.display='block';
       document.getElementById('newTaskBtn').style.display='none';
       renderPcPasswordTab();
+    } else if(activeTab==='games'){
+      document.getElementById('viewTitle').textContent = 'The Technical Games';
+      document.getElementById('gamesView').style.display='block';
+      document.getElementById('newTaskBtn').style.display='none';
+      renderGamesTab();
     } else {
       document.getElementById('viewTitle').textContent = 'Capacity';
       document.getElementById('capacityView').style.display='block';
@@ -534,7 +542,7 @@
     catch(e){ alert(e.message); }
   });
 
-  const ALL_TAB_BTNS = ['tabBoardBtn','tabGanttBtn','tabDashBtn','tabLogBtn','tabProdDashBtn','tabProjectProgressBtn','tabDailyReportBtn','tabPcPasswordBtn','tabCapacityBtn'];
+  const ALL_TAB_BTNS = ['tabBoardBtn','tabGanttBtn','tabDashBtn','tabLogBtn','tabProdDashBtn','tabProjectProgressBtn','tabDailyReportBtn','tabPcPasswordBtn','tabGamesBtn','tabCapacityBtn'];
   function activateTab(name, btnId){
     activeTab = name;
     pcShown.clear(); // revealed passwords re-mask whenever the tab changes
@@ -551,7 +559,7 @@
   // on every ~8s poll, so animating the elements directly would replay the
   // whole entrance (and flicker) every few seconds. See the Motion section
   // of styles.css.
-  const VIEW_IDS = ['board','ganttView','dashboardView','logView','prodDashboardView','projectProgressView','dailyReportView','pcPasswordView','capacityView'];
+  const VIEW_IDS = ['board','ganttView','dashboardView','logView','prodDashboardView','projectProgressView','dailyReportView','pcPasswordView','gamesView','capacityView'];
   const COUNT_SELECTOR = '.dash-stat .num, .prod-rate, .donut-center-num, .capacity-pct-label';
   let enterUntil = 0;
   let enterTimer = null;
@@ -637,6 +645,11 @@
   document.getElementById('tabProjectProgressBtn').addEventListener('click', ()=> activateTab('projectProgress','tabProjectProgressBtn'));
   document.getElementById('tabDailyReportBtn').addEventListener('click', ()=> activateTab('dailyReport','tabDailyReportBtn'));
   document.getElementById('tabPcPasswordBtn').addEventListener('click', ()=>{ pcLoaded = false; activateTab('pcPassword','tabPcPasswordBtn'); });
+  document.getElementById('tabGamesBtn').addEventListener('click', ()=>{
+    // Re-opening the tab refreshes the list — but never throws away a game in progress or an editor with typed-in questions.
+    if(gmScreen==='list' || gmScreen==='detail' || gmScreen==='result'){ gmScreen = 'list'; gmDetail = null; gmResult = null; gmLoaded = false; }
+    activateTab('games','tabGamesBtn');
+  });
   document.getElementById('tabCapacityBtn').addEventListener('click', ()=> activateTab('capacity','tabCapacityBtn'));
 
   function renderStats(){
@@ -3675,6 +3688,447 @@
       }));
     });
   }
+
+  // ---------- THE TECHNICAL GAMES ----------
+  // A quiz for the department (see lib/games.js). The owner builds and runs
+  // games; everyone else plays each one once, 30 seconds per question. The
+  // server owns the clock and the answers — this file only shows the current
+  // question and counts down from the server's issue time. Nothing here is
+  // rebuilt by the 8s poll: the list loads when the tab is opened, and a
+  // running game keeps its own screen.
+  let gmData = null;          // GET /api/games
+  let gmLoaded = false;
+  let gmLoading = false;
+  let gmScreen = 'list';      // list | detail | editor | play | result
+  let gmDetail = null;        // GET /api/games/:id
+  let gmEditor = null;        // {id, title, prize, questions:[...]} while editing
+  let gmPlay = null;          // the running attempt
+  let gmResult = null;
+  let gmMarks = {};           // owner's unsaved paragraph marks: 'playId|qid' -> 0|1|null
+  let gmTimer = null;
+  const gmEl = ()=> document.getElementById('gamesView');
+  const gmStoreKey = id => 'click.game.' + id + '.' + ((session && session.id) || '');
+  function gmSaveProgress(){ try{ localStorage.setItem(gmStoreKey(gmPlay.gameId), JSON.stringify(gmPlay)); }catch(e){} }
+  function gmLoadProgress(id){ try{ return JSON.parse(localStorage.getItem(gmStoreKey(id)) || 'null'); }catch(e){ return null; } }
+  function gmClearProgress(id){ try{ localStorage.removeItem(gmStoreKey(id)); }catch(e){} }
+  const gmFmt = ms => { const s = Math.round((ms||0)/1000); return Math.floor(s/60) + ':' + String(s%60).padStart(2,'0'); };
+  const gmMedal = r => r===1 ? '🥇' : r===2 ? '🥈' : r===3 ? '🥉' : String(r);
+
+  function renderGamesTab(){
+    if(gmLoaded || gmLoading) return;
+    loadGames();
+  }
+  function clearGames(){
+    clearInterval(gmTimer); gmTimer = null;
+    gmData = null; gmLoaded = false; gmScreen = 'list'; gmDetail = null; gmEditor = null; gmPlay = null; gmResult = null; gmMarks = {};
+    gmEl().innerHTML = '';
+  }
+  async function loadGames(){
+    const el = gmEl();
+    gmLoading = true;
+    if(!el.innerHTML) el.innerHTML = skeletonHtml();
+    try{
+      gmData = await api('GET', '/api/games');
+      gmLoaded = true;
+      if(gmScreen==='list') renderGmList();
+    }catch(e){
+      el.innerHTML = `<div class="dash-card"><div class="notif-empty">${escapeHtml(e.message)}</div></div>`;
+    }finally{ gmLoading = false; }
+  }
+  function gmGoList(){
+    clearInterval(gmTimer); gmTimer = null;
+    gmScreen = 'list'; gmDetail = null; gmEditor = null; gmPlay = null; gmResult = null; gmMarks = {};
+    gmLoaded = false; loadGames();
+  }
+  function gmBadge(s){ return `<span class="gm-badge gm-${s}">${s==='draft'?'Draft':s==='open'?'Open':'Closed'}</span>`; }
+  function gmBack(label, act){ return `<button type="button" class="ghost-btn gm-back" data-gm="${act||'list'}">← ${label||'All games'}</button>`; }
+
+  // ----- list -----
+  function renderGmList(){
+    const d = gmData, el = gmEl();
+    const cards = d.games.map(g=>{
+      const m = g.mine;
+      let action = `<button type="button" class="ghost-btn" data-gm="view" data-id="${escAttr(g.id)}">${g.status==='draft'?'Edit / manage':'Leaderboard'}</button>`;
+      if(d.canPlay && g.status==='open' && !m) action = `<button type="button" class="primary-btn" data-gm="play" data-id="${escAttr(g.id)}">▶ Play now</button>` + action;
+      if(d.canPlay && g.status==='open' && m && m.state==='started'){
+        action = (gmLoadProgress(g.id)
+          ? `<button type="button" class="primary-btn" data-gm="resume" data-id="${escAttr(g.id)}">▶ Resume</button>`
+          : '<span class="gm-note">Started — can\'t be restarted</span>') + action;
+      }
+      let status = '';
+      if(m && m.state==='finished') status = `<span class="dr-chip">You played · <b>${m.score}</b> pts${m.pending?' (+'+m.pending+' pending)':''}${m.rank?' · rank <b>'+m.rank+'</b>':''}</span>`;
+      else if(g.status==='closed' && g.winnerName) status = `<span class="dr-chip">🏆 Winner: <b>${escapeHtml(g.winnerName)}</b></span>`;
+      const extra = d.canHost ? `<span class="dr-chip"><b>${g.playersFinished}</b> finished${g.pendingGrades?' · <b>'+g.pendingGrades+'</b> to grade':''}</span>` : `<span class="dr-chip"><b>${g.playersFinished}</b> played</span>`;
+      return `<div class="gm-card">
+        <div class="gm-card-main">
+          <div class="gm-card-title">${escapeHtml(g.title)} ${gmBadge(g.status)}</div>
+          <div class="gm-meta">${g.questionCount} questions · ${d.secondsPerQuestion}s each${g.prize?' · 🎁 '+escapeHtml(g.prize):''}</div>
+          <div class="gm-chips">${status}${extra}</div>
+        </div>
+        <div class="gm-card-actions">${action}</div>
+      </div>`;
+    }).join('');
+    el.innerHTML = `<div class="dash-card">
+      <div class="gm-head">
+        <div>
+          <div class="gm-title">🎮 The Technical Games</div>
+          <div class="dr-hint" style="margin:4px 0 0;">Take a break from work: technical questions, ${d.secondsPerQuestion} seconds each, one attempt per game — the winner takes the prize.</div>
+        </div>
+        ${d.canHost ? '<button type="button" class="primary-btn" data-gm="new">+ New game</button>' : ''}
+      </div>
+      ${cards || `<div class="notif-empty">${d.canHost ? 'No games yet — create the first one.' : 'No games yet. Check back soon!'}</div>`}
+    </div>`;
+    wireGames();
+  }
+
+  // ----- detail: leaderboard / review / owner tools -----
+  async function openGmDetail(id){
+    const el = gmEl();
+    el.innerHTML = skeletonHtml();
+    try{
+      gmDetail = await api('GET', '/api/games/' + encodeURIComponent(id));
+      gmScreen = 'detail'; gmMarks = {};
+      renderGmDetail();
+    }catch(e){ alert(e.message); gmGoList(); }
+  }
+  function gmGradeOf(sub, qid){
+    const k = sub.playId + '|' + qid;
+    return (k in gmMarks) ? gmMarks[k] : (sub.grades && sub.grades[qid] !== undefined ? sub.grades[qid] : undefined);
+  }
+  function renderGmDetail(){
+    const d = gmDetail, g = d.game, host = gmData.canHost, el = gmEl();
+    const board = d.leaderboard.length ? `<table class="gm-table"><thead><tr><th>#</th><th>Player</th><th>Score</th><th>Time</th></tr></thead><tbody>${
+      d.leaderboard.map(r=>`<tr class="${r.mine?'gm-me':''}"><td>${gmMedal(r.rank)}</td><td>${escapeHtml(r.userName)}${r.mine?' (you)':''}</td><td><b>${r.score}</b>${r.pending?' <span class="gm-pending" title="Paragraph answers still to be graded">+'+r.pending+' pending</span>':''}</td><td>${gmFmt(r.totalMs)}</td></tr>`).join('')
+    }</tbody></table><div class="dr-hint" style="margin-top:8px;">Ties are broken by total time. Paragraph answers are graded by the host, so scores can still rise while some show “pending”.</div>`
+      : '<div class="notif-empty">Nobody has finished yet.</div>';
+
+    let tools = '';
+    if(host){
+      tools = `<div class="gm-tools">
+        ${g.status==='draft' ? '<button type="button" class="ghost-btn" data-gm="edit">✎ Edit questions</button><button type="button" class="primary-btn" data-gm="open">Open the game</button>' : ''}
+        ${g.status==='open' ? '<button type="button" class="primary-btn" data-gm="close">Close & announce winner</button>' : ''}
+        <button type="button" class="ghost-btn" data-gm="delete">Delete</button>
+      </div>`;
+    } else if(gmData.canPlay && g.status==='open'){
+      const mine = gmData.games.find(x=>x.id===g.id);
+      if(mine && !mine.mine) tools = `<div class="gm-tools"><button type="button" class="primary-btn" data-gm="play" data-id="${escAttr(g.id)}">▶ Play now</button></div>`;
+    }
+
+    let grading = '';
+    if(host && d.questions){
+      const textQs = d.questions.filter(q=>q.type==='text');
+      if(textQs.length && d.submissions.length){
+        const nMarks = Object.keys(gmMarks).length;
+        grading = `<div class="gm-section"><div class="gm-section-title">Grade paragraph answers</div>
+          <div class="dr-hint">Mark each written answer right (✓) or wrong (✗), then save. Empty answers count as zero automatically.</div>
+          ${textQs.map((q,qi)=>`<div class="gm-gq">
+            <div class="gm-gq-title">Q${d.questions.indexOf(q)+1}. ${escapeHtml(q.text)}</div>
+            ${q.answer?`<div class="gm-model">Model answer: ${escapeHtml(q.answer)}</div>`:''}
+            ${d.submissions.map(s=>{
+              const a = (s.answers||[]).find(x=>x.q===q.id) || {};
+              const cur = gmGradeOf(s, q.id);
+              return `<div class="gm-sub"><div class="gm-sub-who">${escapeHtml(s.userName)}</div>
+                <div class="gm-sub-text ${a.t?'':'gm-empty'}">${a.t?escapeHtml(a.t):(a.missed?'(ran out of time)':'(no answer)')}</div>
+                ${a.t?`<div class="gm-sub-btns"><button type="button" class="gm-mark ${cur===1?'on-yes':''}" data-gm="mark" data-play="${escAttr(s.playId)}" data-q="${escAttr(q.id)}" data-pts="1" title="Right">✓</button><button type="button" class="gm-mark ${cur===0?'on-no':''}" data-gm="mark" data-play="${escAttr(s.playId)}" data-q="${escAttr(q.id)}" data-pts="0" title="Wrong">✗</button></div>`:''}
+              </div>`;
+            }).join('')}
+          </div>`).join('')}
+          <button type="button" class="primary-btn" id="gmSaveMarks" data-gm="saveMarks" ${nMarks?'':'disabled'}>Save grades${nMarks?' ('+nMarks+')':''}</button>
+        </div>`;
+      }
+    }
+
+    let review = '';
+    if(d.review){
+      review = `<div class="gm-section"><div class="gm-section-title">Your answers & the correct ones</div>${d.review.map((q,i)=>{
+        let body;
+        if(q.type==='mc'){
+          body = q.options.map((o,oi)=>`<div class="gm-opt ${oi===q.correct?'gm-correct':''} ${oi===q.yourChoice && oi!==q.correct?'gm-wrong':''}">${oi===q.correct?'✓':(oi===q.yourChoice?'✗':'&nbsp;')} ${escapeHtml(o)}${oi===q.yourChoice?' <i>(your answer)</i>':''}</div>`).join('');
+          if(q.yourChoice==null) body += `<div class="gm-note">${q.missed?'You ran out of time on this one.':'No answer.'}</div>`;
+        } else {
+          body = `<div class="gm-sub-text ${q.yourText?'':'gm-empty'}">Your answer: ${q.yourText?escapeHtml(q.yourText):(q.missed?'(ran out of time)':'(none)')}</div>${q.modelAnswer?`<div class="gm-model">Model answer: ${escapeHtml(q.modelAnswer)}</div>`:''}<div class="gm-note">${q.points===1?'✓ Marked right':q.points===0?'✗ Marked wrong':'Not graded yet'}</div>`;
+        }
+        return `<div class="gm-gq"><div class="gm-gq-title">Q${i+1}. ${escapeHtml(q.text)}</div>${body}</div>`;
+      }).join('')}</div>`;
+    }
+
+    el.innerHTML = `<div class="dash-card">
+      ${gmBack()}
+      <div class="gm-head">
+        <div>
+          <div class="gm-title">${escapeHtml(g.title)} ${gmBadge(g.status)}</div>
+          <div class="gm-meta">${g.questionCount} questions · ${gmData.secondsPerQuestion}s each${g.prize?' · 🎁 Prize: <b>'+escapeHtml(g.prize)+'</b>':''}</div>
+        </div>
+      </div>
+      ${g.status==='closed' ? `<div class="gm-winner">🏆 ${g.winnerName?'Winner: <b>'+escapeHtml(g.winnerName)+'</b>'+(g.prize?' — wins '+escapeHtml(g.prize):''):'This game closed with no finishers.'}</div>` : ''}
+      ${tools}
+      <div class="gm-section"><div class="gm-section-title">Leaderboard</div>${board}</div>
+      ${grading}${review}
+    </div>`;
+    wireGames();
+  }
+
+  // ----- owner editor -----
+  function gmBlankQuestion(type){
+    return type==='text' ? {type:'text', text:'', answer:''} : {type:'mc', text:'', options:['',''], correct:0};
+  }
+  async function openGmEditor(id){
+    if(id){
+      const d = gmDetail && gmDetail.game.id===id ? gmDetail : await api('GET', '/api/games/' + encodeURIComponent(id));
+      gmEditor = {id, title:d.game.title, prize:d.game.prize||'', questions: JSON.parse(JSON.stringify(d.questions||[]))};
+    } else {
+      gmEditor = {id:null, title:'', prize:'', questions: []};
+    }
+    gmScreen = 'editor';
+    renderGmEditor();
+  }
+  function renderGmEditor(){
+    const e = gmEditor, el = gmEl(), min = gmData.minQuestions, max = gmData.maxQuestions;
+    const n = e.questions.length;
+    const qs = e.questions.map((q,i)=>{
+      const opts = q.type==='mc' ? `<div class="gm-ed-opts">${q.options.map((o,oi)=>`<div class="gm-ed-opt">
+          <input type="radio" name="gmc${i}" data-gm-correct="${i}:${oi}" ${q.correct===oi?'checked':''} title="Correct answer">
+          <input type="text" maxlength="150" placeholder="Option ${oi+1}" value="${escAttr(o)}" data-gm-opt="${i}:${oi}">
+          ${q.options.length>2?`<button type="button" class="dr-row-btn" data-gm="rmopt" data-i="${i}" data-oi="${oi}" title="Remove option">✕</button>`:''}
+        </div>`).join('')}${q.options.length<6?`<button type="button" class="ghost-btn" data-gm="addopt" data-i="${i}" style="margin-top:4px;">+ option</button>`:''}</div>`
+        : `<input type="text" maxlength="300" placeholder="Model answer (only you see this — used when grading)" value="${escAttr(q.answer||'')}" data-gm-ans="${i}" class="gm-ed-wide">`;
+      return `<div class="gm-ed-q">
+        <div class="gm-ed-qhead"><b>Q${i+1}</b> <span class="gm-badge gm-${q.type==='mc'?'open':'draft'}">${q.type==='mc'?'Multiple choice':'Paragraph'}</span>
+          <span class="gm-ed-qbtns"><button type="button" class="dr-row-btn" data-gm="qup" data-i="${i}" ${i===0?'disabled':''} title="Move up">↑</button><button type="button" class="dr-row-btn" data-gm="qdown" data-i="${i}" ${i===n-1?'disabled':''} title="Move down">↓</button><button type="button" class="dr-row-btn" data-gm="qdel" data-i="${i}" title="Delete question">✕</button></span></div>
+        <textarea maxlength="400" rows="2" placeholder="Question" data-gm-text="${i}" class="gm-ed-wide">${escapeHtml(q.text)}</textarea>
+        ${opts}
+      </div>`;
+    }).join('');
+    el.innerHTML = `<div class="dash-card">
+      ${gmBack(e.id?'Back to game':'All games', e.id?'detail':'list')}
+      <div class="gm-title">${e.id?'Edit game':'New game'}</div>
+      <div class="gm-ed-top">
+        <input type="text" id="gmEdTitle" maxlength="80" placeholder="Game title (e.g. The Technical Games — Round 1)" value="${escAttr(e.title)}">
+        <input type="text" id="gmEdPrize" maxlength="120" placeholder="Prize (e.g. Gift card)" value="${escAttr(e.prize)}">
+      </div>
+      <div class="dr-hint">${n} question${n===1?'':'s'} — a game needs ${min}–${max} to be opened. Tick the radio next to the correct option of each multiple-choice question.</div>
+      ${qs || '<div class="notif-empty">No questions yet.</div>'}
+      <div class="gm-tools">
+        <button type="button" class="ghost-btn" data-gm="addq-mc" ${n>=max?'disabled':''}>+ Multiple choice</button>
+        <button type="button" class="ghost-btn" data-gm="addq-text" ${n>=max?'disabled':''}>+ Paragraph</button>
+        <button type="button" class="primary-btn" id="gmEdSave" data-gm="saveEditor">Save</button>
+      </div>
+    </div>`;
+    wireGames();
+  }
+
+  // ----- playing -----
+  async function gmStartPlay(id){
+    const g = gmData.games.find(x=>x.id===id);
+    if(!confirm('Start "' + (g ? g.title : 'this game') + '"?\n\n' + (g ? g.questionCount : '') + ' questions, ' + gmData.secondsPerQuestion + ' seconds each. The clock keeps running if you leave, you can\'t pause, and you only get one attempt.')) return;
+    try{
+      const r = await api('POST', '/api/games/' + encodeURIComponent(id) + '/start');
+      gmPlay = gmPlayFrom(id, g ? g.title : '', r);
+      gmSaveProgress();
+      gmScreen = 'play';
+      renderGmPlay();
+    }catch(e){ alert(e.message); gmGoList(); }
+  }
+  function gmPlayFrom(id, title, r){
+    return {gameId:id, title, token:r.token, question:r.question, index:r.index, total:r.total, issuedAt:r.issuedAt, offset:r.serverNow - Date.now(), seconds:r.secondsPerQuestion || 30, choice:null};
+  }
+  function gmResume(id){
+    const p = gmLoadProgress(id);
+    if(!p){ alert('This attempt can\'t be resumed.'); return; }
+    gmPlay = p; gmScreen = 'play';
+    renderGmPlay();
+  }
+  const gmRemaining = ()=> gmPlay.seconds*1000 - (Date.now() + gmPlay.offset - gmPlay.issuedAt);
+
+  function renderGmPlay(){
+    clearInterval(gmTimer);
+    const p = gmPlay, q = p.question, el = gmEl();
+    p.choice = null; p.submitting = false;
+    const body = q.type==='mc'
+      ? `<div class="gm-play-opts">${q.options.map((o,i)=>`<button type="button" class="gm-play-opt" data-gm="pick" data-i="${i}"><span class="gm-key">${i+1}</span>${escapeHtml(o)}</button>`).join('')}</div>`
+      : '<textarea id="gmPlayText" class="gm-play-text" rows="5" maxlength="600" placeholder="Type your answer…"></textarea>';
+    el.innerHTML = `<div class="dash-card gm-play">
+      <div class="gm-play-top"><span>${escapeHtml(p.title)}</span><span>Question <b>${p.index+1}</b> / ${p.total}</span></div>
+      <div class="gm-timer"><div class="gm-timer-bar" id="gmBar"></div></div>
+      <div class="gm-timer-text" id="gmTimeText"></div>
+      <div class="gm-play-q">${escapeHtml(q.text)}</div>
+      ${body}
+      <div class="gm-tools"><button type="button" class="primary-btn" id="gmSubmit" data-gm="submit">${p.index+1===p.total?'Finish':'Next'} →</button></div>
+    </div>`;
+    wireGames();
+    const tick = ()=>{
+      const left = gmRemaining();
+      const bar = document.getElementById('gmBar'), txt = document.getElementById('gmTimeText');
+      if(!bar){ clearInterval(gmTimer); return; }
+      const frac = Math.max(0, Math.min(1, left / (p.seconds*1000)));
+      bar.style.width = (frac*100) + '%';
+      bar.className = 'gm-timer-bar' + (frac<0.34 ? ' gm-low' : '');
+      txt.textContent = Math.max(0, Math.ceil(left/1000)) + 's';
+      if(left <= 0 && (!p.retryAt || Date.now() > p.retryAt)) gmSubmit(true);
+    };
+    tick();
+    gmTimer = setInterval(tick, 200);
+    const ta = document.getElementById('gmPlayText'); if(ta) ta.focus();
+  }
+  async function gmSubmit(auto){
+    const p = gmPlay;
+    if(!p || p.submitting) return;
+    p.submitting = true;
+    const btn = document.getElementById('gmSubmit'); if(btn) btn.disabled = true;
+    const q = p.question;
+    const body = {token: p.token};
+    if(q.type==='mc') body.choice = p.choice; else { const ta = document.getElementById('gmPlayText'); body.text = ta ? ta.value : ''; }
+    try{
+      const r = await api('POST', '/api/games/' + encodeURIComponent(p.gameId) + '/answer', body);
+      clearInterval(gmTimer);
+      if(r.done){
+        gmClearProgress(p.gameId);
+        gmResult = {title:p.title, gameId:p.gameId, r};
+        gmPlay = null; gmScreen = 'result';
+        renderGmResult();
+      } else {
+        gmPlay = gmPlayFrom(p.gameId, p.title, r);
+        gmSaveProgress();
+        renderGmPlay();
+      }
+    }catch(e){
+      p.submitting = false; p.retryAt = Date.now() + 3000;
+      if(btn) btn.disabled = false;
+      if(/not valid|already|closed|not open/i.test(e.message)){
+        clearInterval(gmTimer); gmClearProgress(p.gameId); gmPlay = null;
+        alert(e.message); gmGoList();
+      } else if(!auto) alert(e.message + ' — try again.');
+      // an auto-submit that failed on the network is retried by the next tick
+    }
+  }
+  function renderGmResult(){
+    const r = gmResult.r;
+    gmEl().innerHTML = `<div class="dash-card gm-result">
+      <div class="gm-result-emoji">🎉</div>
+      <div class="gm-title">You finished!</div>
+      <div class="gm-result-score"><b>${r.mcScore}</b> / ${r.mcQuestions} <span>multiple choice correct</span></div>
+      ${r.pending ? `<div class="gm-meta">${r.pending} paragraph answer${r.pending===1?'':'s'} will be graded by the host — your final score may go up.</div>` : ''}
+      <div class="gm-meta">Total time: ${gmFmt(r.totalMs)}</div>
+      <div class="gm-tools" style="justify-content:center;"><button type="button" class="primary-btn" data-gm="resultBoard" data-id="${escAttr(gmResult.gameId)}">See the leaderboard</button></div>
+    </div>`;
+    wireGames();
+  }
+
+  // ----- wiring -----
+  function gmCollectEditor(){
+    const e = gmEditor;
+    e.title = document.getElementById('gmEdTitle').value;
+    e.prize = document.getElementById('gmEdPrize').value;
+  }
+  function wireGames(){
+    const el = gmEl();
+    el.querySelectorAll('[data-gm-text]').forEach(t=> t.addEventListener('input', ()=>{ gmEditor.questions[+t.dataset.gmText].text = t.value; }));
+    el.querySelectorAll('[data-gm-ans]').forEach(t=> t.addEventListener('input', ()=>{ gmEditor.questions[+t.dataset.gmAns].answer = t.value; }));
+    el.querySelectorAll('[data-gm-opt]').forEach(t=> t.addEventListener('input', ()=>{ const [i,oi] = t.dataset.gmOpt.split(':').map(Number); gmEditor.questions[i].options[oi] = t.value; }));
+    el.querySelectorAll('[data-gm-correct]').forEach(t=> t.addEventListener('change', ()=>{ const [i,oi] = t.dataset.gmCorrect.split(':').map(Number); gmEditor.questions[i].correct = oi; }));
+    el.querySelectorAll('[data-gm]').forEach(b=> b.addEventListener('click', ()=> gmAction(b)));
+  }
+  async function gmAction(b){
+    const act = b.dataset.gm, id = b.dataset.id;
+    const i = b.dataset.i != null ? +b.dataset.i : null;
+    const ed = gmEditor;
+    if(act==='list') return gmGoList();
+    if(act==='view') return openGmDetail(id);
+    if(act==='detail') return openGmDetail(ed.id);
+    if(act==='resultBoard') return openGmDetail(id);
+    if(act==='play') return gmStartPlay(id || gmDetail.game.id);
+    if(act==='resume') return gmResume(id);
+    if(act==='new') return openGmEditor(null);
+    if(act==='edit') return openGmEditor(gmDetail.game.id);
+    if(act==='pick'){
+      gmPlay.choice = i;
+      document.querySelectorAll('.gm-play-opt').forEach((o,oi)=> o.classList.toggle('on', oi===i));
+      return;
+    }
+    if(act==='submit') return gmSubmit(false);
+    // editor structure changes
+    if(act.startsWith('addq-')){ gmCollectEditor(); ed.questions.push(gmBlankQuestion(act.slice(5))); return renderGmEditor(); }
+    if(act==='qdel'){ gmCollectEditor(); ed.questions.splice(i,1); return renderGmEditor(); }
+    if(act==='qup' || act==='qdown'){ gmCollectEditor(); const j = act==='qup' ? i-1 : i+1; const t = ed.questions[i]; ed.questions[i] = ed.questions[j]; ed.questions[j] = t; return renderGmEditor(); }
+    if(act==='addopt'){ gmCollectEditor(); ed.questions[i].options.push(''); return renderGmEditor(); }
+    if(act==='rmopt'){
+      gmCollectEditor();
+      const q = ed.questions[i], oi = +b.dataset.oi;
+      q.options.splice(oi,1);
+      if(q.correct===oi) q.correct = 0; else if(q.correct>oi) q.correct--;
+      return renderGmEditor();
+    }
+    if(act==='saveEditor'){
+      gmCollectEditor();
+      b.disabled = true;
+      const payload = {title:ed.title, prize:ed.prize, questions:ed.questions};
+      try{
+        if(ed.id) await api('PUT', '/api/games/' + encodeURIComponent(ed.id), payload);
+        else { const r = await api('POST', '/api/games', payload); ed.id = r.id; }
+        gmLoaded = false;
+        await loadGamesQuiet();
+        return openGmDetail(ed.id);
+      }catch(e){ alert(e.message); b.disabled = false; }
+      return;
+    }
+    // owner actions on a game
+    if(act==='open' || act==='close'){
+      const g = gmDetail.game;
+      const msg = act==='open'
+        ? 'Open "' + g.title + '" to everyone now? Its questions will be locked.'
+        : 'Close "' + g.title + '" and announce the winner? Make sure all paragraph answers are graded first — players can\'t finish after this.';
+      if(!confirm(msg)) return;
+      try{
+        const r = await api('POST', '/api/games/' + encodeURIComponent(g.id) + '/status', {status: act==='open' ? 'open' : 'closed'});
+        await loadGamesQuiet();
+        await openGmDetail(g.id);
+        if(act==='close') alert(r.winnerName ? '🏆 Winner: ' + r.winnerName : 'Closed — nobody finished the game.');
+      }catch(e){ alert(e.message); }
+      return;
+    }
+    if(act==='delete'){
+      const g = gmDetail.game;
+      if(!confirm('Delete "' + g.title + '" and every player\'s result? This can\'t be undone.')) return;
+      try{ await api('DELETE', '/api/games/' + encodeURIComponent(g.id)); gmGoList(); }catch(e){ alert(e.message); }
+      return;
+    }
+    if(act==='mark'){
+      const k = b.dataset.play + '|' + b.dataset.q, pts = +b.dataset.pts;
+      const sub = gmDetail.submissions.find(s=>s.playId===b.dataset.play);
+      const cur = gmGradeOf(sub, b.dataset.q);
+      const next = cur===pts ? null : pts; // clicking the active mark clears it
+      if((sub.grades||{})[b.dataset.q] === (next===null ? undefined : next)) delete gmMarks[k]; else gmMarks[k] = next;
+      const y = window.scrollY;
+      renderGmDetail();
+      window.scrollTo(0, y);
+      return;
+    }
+    if(act==='saveMarks'){
+      const grades = Object.keys(gmMarks).map(k=>{ const [playId,qid] = k.split('|'); return {playId, qid, points:gmMarks[k]}; });
+      if(!grades.length) return;
+      b.disabled = true;
+      try{
+        await api('PUT', '/api/games/' + encodeURIComponent(gmDetail.game.id) + '/grades', {grades});
+        await loadGamesQuiet();
+        await openGmDetail(gmDetail.game.id);
+      }catch(e){ alert(e.message); b.disabled = false; }
+      return;
+    }
+  }
+  // Refreshes the list data without touching the screen.
+  async function loadGamesQuiet(){
+    try{ gmData = await api('GET', '/api/games'); gmLoaded = true; }catch(e){}
+  }
+  document.addEventListener('keydown', (ev)=>{
+    if(gmScreen!=='play' || !gmPlay || gmPlay.question.type!=='mc' || (ev.target.closest && ev.target.closest('input,textarea'))) return;
+    if(activeTab!=='games') return;
+    if(ev.key==='Enter'){ gmSubmit(false); return; }
+    const n = parseInt(ev.key, 10);
+    if(n>=1 && n<=gmPlay.question.options.length){
+      const o = document.querySelectorAll('.gm-play-opt')[n-1];
+      if(o) o.click();
+    }
+  });
 
   // ---------- REPORTS › ALLOCATION ----------
   // The second view of the Reports tab. Mirrors the "Allocation of Hours"

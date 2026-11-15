@@ -11,6 +11,7 @@ const scheduler = require('./lib/scheduler');
 const achievements = require('./lib/achievements');
 const dailyReport = require('./lib/dailyReport');
 const vault = require('./lib/vault');
+const gamesLib = require('./lib/games');
 
 const app = express();
 app.use(cors());
@@ -664,6 +665,253 @@ app.delete('/api/pc-passwords/:id', requireAuth, async (req, res) => {
   } catch (e) { sendErr(res, e); }
 });
 
+// ---------- THE TECHNICAL GAMES ----------
+// See lib/games.js for how a game works and why play timing is carried in a
+// signed token instead of being written to the sheet on every answer.
+// Hosting (create/edit/open/close/grade/delete) is owner-only; the owner is
+// the host, so doesn't play. Viewers are excluded entirely. Everyone else
+// plays each game once. Correct answers are only sent to the owner — and,
+// once a game is closed, back to the people who played it (for review).
+const gamesReader = makeCachedReader(() => readTab('Games').catch(() => []), 10000);
+const gamePlaysReader = makeCachedReader(() => readTab('GamePlays').catch(() => []), 10000);
+function invalidateGames() { gamesReader.invalidate(); gamePlaysReader.invalidate(); }
+const isGameHost = req => req.user.role === 'owner';
+const canPlayGames = req => req.user.role !== 'owner' && !req.user.isViewer && !!req.user.id;
+
+// Cached lookup first; a miss (the game was created/opened a moment ago, on
+// another server instance) falls through to a fresh read.
+async function findGame(id, fresh) {
+  if (!fresh) {
+    const hit = (await gamesReader.get()).find(g => g.id === id);
+    if (hit) return hit;
+  }
+  return (await readTab('Games').catch(() => [])).find(g => g.id === id) || null;
+}
+
+function gameHead(g) {
+  return { id: g.id, title: g.title, prize: g.prize, status: g.status, questionCount: g.questions.length, openedAt: g.openedAt, closedAt: g.closedAt, winnerName: g.winnerName };
+}
+
+function cleanGameFields(body) {
+  const title = String(body.title == null ? '' : body.title).trim();
+  const prize = String(body.prize == null ? '' : body.prize).trim();
+  if (!title) throw gamesLib.fail('Give the game a title.');
+  if (title.length > 80) throw gamesLib.fail('The title is too long (max 80 characters).');
+  if (prize.length > 120) throw gamesLib.fail('The prize text is too long (max 120 characters).');
+  return { title, prize };
+}
+
+app.get('/api/games', requireAuth, async (req, res) => {
+  try {
+    if (req.user.isViewer) throw new Error('FORBIDDEN');
+    const host = isGameHost(req);
+    const [games, plays] = await Promise.all([gamesReader.get(), gamePlaysReader.get()]);
+    const list = games.filter(g => host || g.status !== 'draft').map(g => {
+      const gp = plays.filter(p => p.gameId === g.id);
+      const board = gamesLib.leaderboard(g.questions, gp);
+      const mine = host ? null : gp.find(p => p.userId === req.user.id);
+      const mineRow = mine && mine.finishedAt ? board.find(r => r.playId === mine.id) : null;
+      return Object.assign(gameHead(g), {
+        createdAt: g.createdAt,
+        playersStarted: gp.length,
+        playersFinished: board.length,
+        pendingGrades: host ? board.reduce((s, r) => s + r.pending, 0) : undefined,
+        mine: !mine ? null : { state: mine.finishedAt ? 'finished' : 'started', score: mineRow ? mineRow.score : null, pending: mineRow ? mineRow.pending : 0, rank: mineRow ? mineRow.rank : null }
+      });
+    }).sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''));
+    res.set('Cache-Control', 'no-store');
+    res.json({ canHost: host, canPlay: canPlayGames(req), secondsPerQuestion: gamesLib.SECONDS_PER_QUESTION, minQuestions: gamesLib.MIN_QUESTIONS, maxQuestions: gamesLib.MAX_QUESTIONS, games: list });
+  } catch (e) { sendErr(res, e); }
+});
+
+app.get('/api/games/:id', requireAuth, async (req, res) => {
+  try {
+    if (req.user.isViewer) throw new Error('FORBIDDEN');
+    const host = isGameHost(req);
+    const g = await findGame(req.params.id, true);
+    if (!g || (g.status === 'draft' && !host)) throw new Error('NOT_FOUND');
+    const plays = (await readTab('GamePlays').catch(() => [])).filter(p => p.gameId === g.id);
+    const board = gamesLib.leaderboard(g.questions, plays);
+    const out = {
+      game: gameHead(g),
+      leaderboard: board.map(r => ({ rank: r.rank, userName: r.userName, score: r.score, pending: r.pending, totalMs: r.totalMs, mine: r.userId === req.user.id, playId: host ? r.playId : undefined }))
+    };
+    if (host) {
+      out.questions = g.questions;
+      out.submissions = plays.filter(p => p.finishedAt).map(p => ({ playId: p.id, userName: p.userName, answers: p.answers, grades: p.grades }));
+    } else if (g.status === 'closed') {
+      const mine = plays.find(p => p.userId === req.user.id && p.finishedAt);
+      if (mine) out.review = g.questions.map(q => {
+        const a = (mine.answers || []).find(x => x.q === q.id) || {};
+        return { id: q.id, type: q.type, text: q.text, options: q.options, correct: q.correct, modelAnswer: q.answer, yourChoice: a.c, yourText: a.t, missed: !!a.missed, points: q.type === 'mc' ? (a.c === q.correct ? 1 : 0) : (mine.grades || {})[q.id] };
+      });
+    }
+    res.set('Cache-Control', 'no-store');
+    res.json(out);
+  } catch (e) { sendErr(res, e); }
+});
+
+app.post('/api/games', requireAuth, async (req, res) => {
+  try {
+    if (!isGameHost(req)) throw new Error('FORBIDDEN');
+    const { title, prize } = cleanGameFields(req.body);
+    const questions = gamesLib.normalizeQuestions(req.body.questions || [], genId);
+    const id = genId('g');
+    await updateTab('Games', rows => rows.concat([{ id, title, prize, status: 'draft', questions, createdAt: new Date().toISOString(), openedAt: '', closedAt: '', winnerName: '' }]));
+    invalidateGames();
+    res.json({ id });
+  } catch (e) { sendErr(res, e); }
+});
+
+app.put('/api/games/:id', requireAuth, async (req, res) => {
+  try {
+    if (!isGameHost(req)) throw new Error('FORBIDDEN');
+    const { title, prize } = cleanGameFields(req.body);
+    const questions = gamesLib.normalizeQuestions(req.body.questions || [], genId);
+    await updateTab('Games', rows => {
+      const g = rows.find(r => r.id === req.params.id);
+      if (!g) throw new Error('NOT_FOUND');
+      if (g.status !== 'draft') throw gamesLib.fail('Only a draft game can be edited — questions are locked once it is opened.');
+      Object.assign(g, { title, prize, questions });
+      return rows;
+    });
+    invalidateGames();
+    res.json({ ok: true });
+  } catch (e) { sendErr(res, e); }
+});
+
+// draft -> open -> closed. Closing crowns the current leader.
+app.post('/api/games/:id/status', requireAuth, async (req, res) => {
+  try {
+    if (!isGameHost(req)) throw new Error('FORBIDDEN');
+    const next = req.body.status;
+    if (next !== 'open' && next !== 'closed') throw new Error('BAD_REQUEST');
+    const plays = next === 'closed' ? (await readTab('GamePlays').catch(() => [])).filter(p => p.gameId === req.params.id) : [];
+    let winnerName = '';
+    await updateTab('Games', rows => {
+      const g = rows.find(r => r.id === req.params.id);
+      if (!g) throw new Error('NOT_FOUND');
+      if (next === 'open') {
+        if (g.status !== 'draft') throw gamesLib.fail('Only a draft game can be opened.');
+        gamesLib.assertCanOpen(g.questions);
+        g.status = 'open';
+        g.openedAt = new Date().toISOString();
+      } else {
+        if (g.status !== 'open') throw gamesLib.fail('Only an open game can be closed.');
+        const board = gamesLib.leaderboard(g.questions, plays);
+        winnerName = board.length ? board[0].userName : '';
+        g.status = 'closed';
+        g.closedAt = new Date().toISOString();
+        g.winnerName = winnerName;
+      }
+      return rows;
+    });
+    invalidateGames();
+    res.json({ ok: true, winnerName });
+  } catch (e) { sendErr(res, e); }
+});
+
+app.delete('/api/games/:id', requireAuth, async (req, res) => {
+  try {
+    if (!isGameHost(req)) throw new Error('FORBIDDEN');
+    await updateTab('Games', rows => {
+      if (!rows.some(r => r.id === req.params.id)) throw new Error('NOT_FOUND');
+      return rows.filter(r => r.id !== req.params.id);
+    });
+    await updateTab('GamePlays', rows => rows.filter(r => r.gameId !== req.params.id));
+    invalidateGames();
+    res.json({ ok: true });
+  } catch (e) { sendErr(res, e); }
+});
+
+// Owner marks paragraph answers in bulk (one sheet write for the whole batch,
+// since every write is 3 API calls): each entry is {playId, qid, points}
+// with points 1 (right), 0 (wrong), or null to clear the mark again.
+app.put('/api/games/:id/grades', requireAuth, async (req, res) => {
+  try {
+    if (!isGameHost(req)) throw new Error('FORBIDDEN');
+    const marks = req.body.grades;
+    if (!Array.isArray(marks) || !marks.length || marks.length > 500) throw new Error('BAD_REQUEST');
+    const g = await findGame(req.params.id, true);
+    if (!g) throw new Error('NOT_FOUND');
+    const textIds = new Set(g.questions.filter(q => q.type === 'text').map(q => q.id));
+    marks.forEach(m => {
+      if (!m || !textIds.has(m.qid) || (m.points !== 0 && m.points !== 1 && m.points !== null)) throw new Error('BAD_REQUEST');
+    });
+    await updateTab('GamePlays', rows => {
+      marks.forEach(m => {
+        const p = rows.find(r => r.id === m.playId && r.gameId === g.id && r.finishedAt);
+        if (!p) return;
+        p.grades = p.grades || {};
+        if (m.points === null) delete p.grades[m.qid]; else p.grades[m.qid] = m.points;
+      });
+      return rows;
+    });
+    invalidateGames();
+    res.json({ ok: true });
+  } catch (e) { sendErr(res, e); }
+});
+
+// Begins a player's one attempt. The attempt is recorded in the sheet right
+// away so closing the tab can't be used to peek at the questions and retry.
+app.post('/api/games/:id/start', requireAuth, async (req, res) => {
+  try {
+    if (!canPlayGames(req)) throw new Error('FORBIDDEN');
+    const g = await findGame(req.params.id, true);
+    if (!g || g.status !== 'open') throw gamesLib.fail('This game is not open right now.');
+    const playId = genId('gp');
+    await updateTab('GamePlays', rows => {
+      const mine = rows.find(r => r.gameId === g.id && r.userId === req.user.id);
+      if (mine) throw gamesLib.fail(mine.finishedAt ? 'You have already played this game.' : 'You already started this game — it can\'t be restarted.');
+      rows.push({ id: playId, gameId: g.id, userId: req.user.id, userName: req.user.name || 'Engineer', startedAt: new Date().toISOString(), finishedAt: '', answers: [], mcScore: 0, grades: {}, totalMs: 0 });
+      return rows;
+    });
+    invalidateGames();
+    const now = Date.now();
+    res.json({
+      token: gamesLib.signState({ p: playId, g: g.id, u: req.user.id, i: 0, at: now, a: [] }),
+      issuedAt: now, serverNow: now, index: 0, total: g.questions.length,
+      secondsPerQuestion: gamesLib.SECONDS_PER_QUESTION, question: gamesLib.publicQuestion(g.questions[0])
+    });
+  } catch (e) { sendErr(res, e); }
+});
+
+// One answer per call. Checks the clock against the token, appends the
+// answer, and either issues the next question or — after the last one —
+// saves the whole attempt and returns the player's result.
+app.post('/api/games/:id/answer', requireAuth, async (req, res) => {
+  try {
+    if (!canPlayGames(req)) throw new Error('FORBIDDEN');
+    const st = gamesLib.verifyState(req.body.token);
+    if (!st || st.g !== req.params.id || st.u !== req.user.id || !Array.isArray(st.a)) throw gamesLib.fail('This game session is not valid.');
+    const g = await findGame(st.g, false);
+    if (!g) throw new Error('NOT_FOUND');
+    const q = g.questions[st.i];
+    if (!q || st.a.length !== st.i) throw gamesLib.fail('This game session is not valid.');
+    const now = Date.now();
+    const answers = st.a.concat([gamesLib.recordAnswer(q, now - st.at, req.body)]);
+    if (st.i + 1 < g.questions.length) {
+      const nextQ = g.questions[st.i + 1];
+      return res.json({
+        done: false, token: gamesLib.signState({ p: st.p, g: st.g, u: st.u, i: st.i + 1, at: now, a: answers }),
+        issuedAt: now, serverNow: now, index: st.i + 1, total: g.questions.length, question: gamesLib.publicQuestion(nextQ)
+      });
+    }
+    if (g.status === 'closed') throw gamesLib.fail('This game was closed before you finished, so your attempt was not counted.');
+    let saved;
+    await updateTab('GamePlays', rows => {
+      const row = rows.find(r => r.id === st.p && r.userId === req.user.id);
+      if (!row) throw new Error('NOT_FOUND');
+      if (row.finishedAt) throw gamesLib.fail('This attempt was already submitted.');
+      Object.assign(row, { finishedAt: new Date().toISOString(), answers, mcScore: gamesLib.mcScore(g.questions, answers), totalMs: gamesLib.totalMs(answers) });
+      saved = row;
+      return rows;
+    });
+    invalidateGames();
+    res.json({ done: true, total: g.questions.length, mcQuestions: g.questions.filter(x => x.type === 'mc').length, mcScore: saved.mcScore, pending: gamesLib.pendingCount(g.questions, saved), totalMs: saved.totalMs });
+  } catch (e) { sendErr(res, e); }
+});
+
 // ---------- CHAT (team channels + direct messages) ----------
 // Team channels: one per team (the 4 existing groups). Any member of a team
 // can read/post in their own team's channel; the owner can read/switch
@@ -1071,7 +1319,7 @@ app.get('/api/leaves', requireAuth, async (req, res) => {
 
 app.get('/api/backup/export', requireAuth, requireOwner, async (req, res) => {
   try {
-    const tabs = ['Teams', 'Members', 'Tasks', 'Notifications', 'Achievements', 'WorkDays', 'ProjectTargets', 'Messages', 'ChatReads', 'DailyReports', 'ChecklistTemplates', 'Comments', 'Holidays', 'Leaves', 'ProjectScope'];
+    const tabs = ['Teams', 'Members', 'Tasks', 'Notifications', 'Achievements', 'WorkDays', 'ProjectTargets', 'Messages', 'ChatReads', 'DailyReports', 'Games', 'GamePlays', 'ChecklistTemplates', 'Comments', 'Holidays', 'Leaves', 'ProjectScope'];
     const data = {};
     for (const tab of tabs) {
       const rows = await readTab(tab).catch(() => []);
