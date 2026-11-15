@@ -3916,6 +3916,10 @@
           <label>Minimum questions to open<input type="number" id="gmSetMin" min="1" max="${gmData.limits.maxQuestions}" value="${escAttr(e.settings.minQuestions)}"></label>
           <label>Maximum questions<input type="number" id="gmSetMax" min="1" max="${gmData.limits.maxQuestions}" value="${escAttr(e.settings.maxQuestions)}"></label>
         </div>
+        <div class="gm-set-checks">
+          <label><input type="checkbox" id="gmSetShuffleQ" ${e.settings.shuffleQuestions?'checked':''}> Shuffle questions — each player gets them in a different order</label>
+          <label><input type="checkbox" id="gmSetShuffleO" ${e.settings.shuffleOptions?'checked':''}> Shuffle options — multiple-choice options are mixed up per player</label>
+        </div>
         <div class="dr-hint" style="margin:8px 0 0;">Time limits are ${gmData.limits.minSeconds}–${gmData.limits.maxSeconds} seconds (give paragraph answers longer). Settings and questions lock once the game is opened.</div>
       </div>
       <div class="dr-hint">${n} question${n===1?'':'s'} — a game needs ${min}–${max} to be opened. Tick the radio next to the correct option of each multiple-choice question.</div>
@@ -4035,7 +4039,9 @@
       seconds: document.getElementById('gmSetSeconds').value,
       textSeconds: document.getElementById('gmSetTextSeconds').value,
       minQuestions: document.getElementById('gmSetMin').value,
-      maxQuestions: document.getElementById('gmSetMax').value
+      maxQuestions: document.getElementById('gmSetMax').value,
+      shuffleQuestions: document.getElementById('gmSetShuffleQ').checked,
+      shuffleOptions: document.getElementById('gmSetShuffleO').checked
     };
   }
   function wireGames(){

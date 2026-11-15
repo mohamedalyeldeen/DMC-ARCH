@@ -870,10 +870,12 @@ app.post('/api/games/:id/start', requireAuth, async (req, res) => {
     });
     invalidateGames();
     const now = Date.now();
+    const settings = gamesLib.settingsOf(g);
+    const first = gamesLib.playOrder(g.questions, settings, playId)[0];
     res.json({
       token: gamesLib.signState({ p: playId, g: g.id, u: req.user.id, i: 0, at: now, a: [] }),
       issuedAt: now, serverNow: now, index: 0, total: g.questions.length,
-      secondsPerQuestion: gamesLib.questionSeconds(g.questions[0], gamesLib.settingsOf(g)), question: gamesLib.publicQuestion(g.questions[0])
+      secondsPerQuestion: gamesLib.questionSeconds(first, settings), question: gamesLib.publicQuestion(first, gamesLib.optionPerm(first, settings, playId))
     });
   } catch (e) { sendErr(res, e); }
 });
@@ -888,17 +890,18 @@ app.post('/api/games/:id/answer', requireAuth, async (req, res) => {
     if (!st || st.g !== req.params.id || st.u !== req.user.id || !Array.isArray(st.a)) throw gamesLib.fail('This game session is not valid.');
     const g = await findGame(st.g, false);
     if (!g) throw new Error('NOT_FOUND');
-    const q = g.questions[st.i];
+    const settings = gamesLib.settingsOf(g);
+    const order = gamesLib.playOrder(g.questions, settings, st.p); // this player's question order
+    const q = order[st.i];
     if (!q || st.a.length !== st.i) throw gamesLib.fail('This game session is not valid.');
     const now = Date.now();
-    const settings = gamesLib.settingsOf(g);
-    const answers = st.a.concat([gamesLib.recordAnswer(q, now - st.at, req.body, settings)]);
-    if (st.i + 1 < g.questions.length) {
-      const nextQ = g.questions[st.i + 1];
+    const answers = st.a.concat([gamesLib.recordAnswer(q, now - st.at, req.body, settings, gamesLib.optionPerm(q, settings, st.p))]);
+    if (st.i + 1 < order.length) {
+      const nextQ = order[st.i + 1];
       return res.json({
         done: false, token: gamesLib.signState({ p: st.p, g: st.g, u: st.u, i: st.i + 1, at: now, a: answers }),
-        issuedAt: now, serverNow: now, index: st.i + 1, total: g.questions.length,
-        secondsPerQuestion: gamesLib.questionSeconds(nextQ, settings), question: gamesLib.publicQuestion(nextQ)
+        issuedAt: now, serverNow: now, index: st.i + 1, total: order.length,
+        secondsPerQuestion: gamesLib.questionSeconds(nextQ, settings), question: gamesLib.publicQuestion(nextQ, gamesLib.optionPerm(nextQ, settings, st.p))
       });
     }
     if (g.status === 'closed') throw gamesLib.fail('This game was closed before you finished, so your attempt was not counted.');
