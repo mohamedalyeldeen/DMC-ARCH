@@ -3705,7 +3705,8 @@
   let gmPlay = null;          // the running attempt
   let gmResult = null;
   let gmMarks = {};           // owner's unsaved paragraph marks: 'playId|qid' -> 0|1|null
-  let gmAud = null;           // owner's audience editor for the open game: {mode:'all'|'selected', ids:Set, dirty}
+  let gmShowAllAnswers = false; // owner's "what each player got wrong": also list the right ones
+  let gmAud = null;          // owner's audience editor for the open game: {mode:'all'|'selected', ids:Set, dirty}
   let gmTimer = null;
   const gmEl = ()=> document.getElementById('gamesView');
   const gmStoreKey = id => 'click.game.' + id + '.' + ((session && session.id) || '');
@@ -3799,6 +3800,51 @@
     const k = sub.playId + '|' + qid;
     return (k in gmMarks) ? gmMarks[k] : (sub.grades && sub.grades[qid] !== undefined ? sub.grades[qid] : undefined);
   }
+  // How one player did on one question: 'right' | 'wrong' | 'timeout' | 'blank' | 'pending'.
+  function gmMarkOf(q, sub){
+    const a = (sub.answers||[]).find(x=>x.q===q.id);
+    if(!a || a.missed) return 'timeout';
+    if(q.type==='mc') return a.c==null ? 'blank' : (a.c===q.correct ? 'right' : 'wrong');
+    if(!a.t) return 'blank';
+    const g = gmGradeOf(sub, q.id);
+    return g===1 ? 'right' : g===0 ? 'wrong' : 'pending';
+  }
+  // Owner view: what each player got wrong, plus which questions caught people out.
+  function gmAnswersHtml(d){
+    if(!d.submissions || !d.submissions.length) return '';
+    const qs = d.questions;
+    const order = d.leaderboard.map(r=>d.submissions.find(s=>s.playId===r.playId)).filter(Boolean);
+    const perQ = qs.map(()=>({right:0, wrong:0, pending:0}));
+    const players = order.map(sub=>{
+      const marks = qs.map(q=>gmMarkOf(q, sub));
+      marks.forEach((m,i)=>{ if(m==='right') perQ[i].right++; else if(m==='pending') perQ[i].pending++; else perQ[i].wrong++; });
+      const row = d.leaderboard.find(r=>r.playId===sub.playId);
+      const wrongN = marks.filter(m=>m==='wrong'||m==='timeout'||m==='blank').length;
+      const items = qs.map((q,i)=>{
+        const m = marks[i];
+        if(m==='right' && !gmShowAllAnswers) return '';
+        const a = (sub.answers||[]).find(x=>x.q===q.id) || {};
+        let yours, correct = '';
+        if(q.type==='mc'){
+          yours = a.missed||!a ? 'ran out of time' : (a.c==null ? 'no answer' : escapeHtml(q.options[a.c]));
+          correct = 'Correct: <b>' + escapeHtml(q.options[q.correct]) + '</b>';
+        } else {
+          yours = a.missed ? 'ran out of time' : (a.t ? escapeHtml(a.t) : 'no answer');
+          correct = q.answer ? 'Model answer: <b>' + escapeHtml(q.answer) + '</b>' : '';
+        }
+        const tag = {right:'✓',wrong:'✗',timeout:'⏱',blank:'✗',pending:'…'}[m];
+        return `<div class="gm-ans gm-ans-${m}"><span class="gm-ans-tag">${tag}</span><div><div class="gm-ans-q">Q${i+1}. ${escapeHtml(q.text)}</div><div class="gm-ans-line">Their answer: <i>${yours}</i>${correct?' · '+correct:''}${m==='pending'?' · <span class="gm-pending">waiting for your grade</span>':''}</div></div></div>`;
+      }).join('');
+      return `<details class="gm-player"><summary><span class="gm-player-name">${gmMedal(row.rank)} ${escapeHtml(sub.userName)}</span><span class="gm-player-sum"><b>${row.score}</b> pts · ${wrongN?'<span class="gm-bad">'+wrongN+' wrong</span>':'<span class="gm-good">all right</span>'}</span></summary>${items || '<div class="gm-note" style="padding:8px 0;">Nothing wrong here. 🎉</div>'}</details>`;
+    }).join('');
+    const hard = qs.map((q,i)=>({i, q, n:perQ[i].wrong, total:order.length}))
+      .filter(x=>x.n>0).sort((a,b)=>b.n-a.n || a.i-b.i).slice(0,5)
+      .map(x=>`<div class="gm-hard"><span>Q${x.i+1}. ${escapeHtml(x.q.text)}</span><b>${x.n} of ${x.total} got it wrong</b></div>`).join('');
+    return `<div class="gm-section"><div class="gm-section-title">What each player got wrong</div>
+      <label class="gm-aud-mode" style="margin:0 0 8px;"><input type="checkbox" id="gmShowAll" ${gmShowAllAnswers?'checked':''}> Also list the questions they got right</label>
+      ${hard ? `<div class="gm-hard-box"><div class="gm-hard-title">Hardest questions</div>${hard}</div>` : ''}
+      ${players}</div>`;
+  }
   function renderGmDetail(){
     const d = gmDetail, g = d.game, host = gmData.canHost, el = gmEl();
     const board = d.leaderboard.length ? `<table class="gm-table"><thead><tr><th>#</th><th>Player</th><th>Score</th><th>Time</th></tr></thead><tbody>${
@@ -3888,7 +3934,7 @@
       ${g.status==='closed' ? `<div class="gm-winner">🏆 ${g.winnerName?'Winner: <b>'+escapeHtml(g.winnerName)+'</b>'+(g.prize?' — wins '+escapeHtml(g.prize):''):'This game closed with no finishers.'}</div>` : ''}
       ${tools}
       <div class="gm-section"><div class="gm-section-title">Leaderboard</div>${board}</div>
-      ${audience}${grading}${review}
+      ${audience}${grading}${host && d.questions ? gmAnswersHtml(d) : ''}${review}
     </div>`;
     wireGames();
   }
@@ -4072,6 +4118,14 @@
     el.querySelectorAll('[data-gm-text]').forEach(t=> t.addEventListener('input', ()=>{ gmEditor.questions[+t.dataset.gmText].text = t.value; }));
     el.querySelectorAll('[data-gm-ans]').forEach(t=> t.addEventListener('input', ()=>{ gmEditor.questions[+t.dataset.gmAns].answer = t.value; }));
     el.querySelectorAll('[data-gm-opt]').forEach(t=> t.addEventListener('input', ()=>{ const [i,oi] = t.dataset.gmOpt.split(':').map(Number); gmEditor.questions[i].options[oi] = t.value; }));
+    const showAll = document.getElementById('gmShowAll');
+    if(showAll) showAll.addEventListener('change', ()=>{
+      gmShowAllAnswers = showAll.checked;
+      const open = Array.from(el.querySelectorAll('.gm-player')).map(p=>p.open); // keep expanded players expanded
+      const y = window.scrollY; renderGmDetail();
+      el.querySelectorAll('.gm-player').forEach((p,i)=>{ p.open = !!open[i]; });
+      window.scrollTo(0, y);
+    });
     el.querySelectorAll('[name=gmAudMode]').forEach(r=> r.addEventListener('change', ()=>{
       gmAud.mode = r.value; gmAud.dirty = true;
       const y = window.scrollY; renderGmDetail(); window.scrollTo(0, y);
