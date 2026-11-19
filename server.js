@@ -688,8 +688,10 @@ async function findGame(id, fresh) {
   return (await readTab('Games').catch(() => [])).find(g => g.id === id) || null;
 }
 
-function gameHead(g) {
-  return { id: g.id, title: g.title, prize: g.prize, status: g.status, questionCount: g.questions.length, openedAt: g.openedAt, closedAt: g.closedAt, winnerName: g.winnerName, settings: gamesLib.settingsOf(g) };
+// The leaderboard (and so the winner and anyone's rank) is hidden from players
+// until the owner shows it (PUT /api/games/:id/board); the owner always sees it.
+function gameHead(g, host) {
+  return { id: g.id, title: g.title, prize: g.prize, status: g.status, questionCount: g.questions.length, openedAt: g.openedAt, closedAt: g.closedAt, winnerName: (host || g.showBoard) ? g.winnerName : '', boardVisible: !!g.showBoard, settings: gamesLib.settingsOf(g) };
 }
 
 // Who may see and play a game: `audience` is null for everyone, or the list
@@ -717,13 +719,13 @@ app.get('/api/games', requireAuth, async (req, res) => {
       const board = gamesLib.leaderboard(g.questions, gp);
       const mine = host ? null : gp.find(p => p.userId === req.user.id);
       const mineRow = mine && mine.finishedAt ? board.find(r => r.playId === mine.id) : null;
-      return Object.assign(gameHead(g), {
+      return Object.assign(gameHead(g, host), {
         createdAt: g.createdAt,
         audienceCount: host ? (Array.isArray(g.audience) ? g.audience.length : null) : undefined, // null = everyone
         playersStarted: gp.length,
         playersFinished: board.length,
         pendingGrades: host ? board.reduce((s, r) => s + r.pending, 0) : undefined,
-        mine: !mine ? null : { state: mine.finishedAt ? 'finished' : 'started', score: mineRow ? mineRow.score : null, pending: mineRow ? mineRow.pending : 0, rank: mineRow ? mineRow.rank : null }
+        mine: !mine ? null : { state: mine.finishedAt ? 'finished' : 'started', score: mineRow ? mineRow.score : null, pending: mineRow ? mineRow.pending : 0, rank: mineRow && g.showBoard ? mineRow.rank : null }
       });
     }).sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''));
     res.set('Cache-Control', 'no-store');
@@ -739,9 +741,13 @@ app.get('/api/games/:id', requireAuth, async (req, res) => {
     if (!g || (!host && (g.status === 'draft' || !inAudience(g, req.user.id)))) throw new Error('NOT_FOUND');
     const plays = (await readTab('GamePlays').catch(() => [])).filter(p => p.gameId === g.id);
     const board = gamesLib.leaderboard(g.questions, plays);
+    const showBoard = host || g.showBoard;
+    const myRow = host ? null : board.find(r => r.userId === req.user.id);
     const out = {
-      game: gameHead(g),
-      leaderboard: board.map(r => ({ rank: r.rank, userName: r.userName, score: r.score, pending: r.pending, totalMs: r.totalMs, mine: r.userId === req.user.id, playId: host ? r.playId : undefined }))
+      game: gameHead(g, host),
+      leaderboard: !showBoard ? [] : board.map(r => ({ rank: r.rank, userName: r.userName, score: r.score, pending: r.pending, totalMs: r.totalMs, mine: r.userId === req.user.id, playId: host ? r.playId : undefined })),
+      // With the board hidden a player still sees their own result, just not the ranking.
+      you: !showBoard && myRow ? { score: myRow.score, pending: myRow.pending, totalMs: myRow.totalMs } : undefined
     };
     if (host) {
       out.questions = g.questions;
@@ -783,6 +789,23 @@ app.put('/api/games/:id/audience', requireAuth, async (req, res) => {
     });
     invalidateGames();
     res.json({ ok: true, audienceCount: audience ? audience.length : null });
+  } catch (e) { sendErr(res, e); }
+});
+
+// Owner shows or hides the leaderboard (and the winner) for players. Allowed
+// in any status; the owner always sees it themselves.
+app.put('/api/games/:id/board', requireAuth, async (req, res) => {
+  try {
+    if (!isGameHost(req)) throw new Error('FORBIDDEN');
+    if (typeof req.body.visible !== 'boolean') throw new Error('BAD_REQUEST');
+    await updateTab('Games', rows => {
+      const g = rows.find(r => r.id === req.params.id);
+      if (!g) throw new Error('NOT_FOUND');
+      g.showBoard = req.body.visible;
+      return rows;
+    });
+    invalidateGames();
+    res.json({ ok: true });
   } catch (e) { sendErr(res, e); }
 });
 

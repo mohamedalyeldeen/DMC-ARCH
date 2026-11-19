@@ -3762,7 +3762,7 @@
       let status = '';
       if(m && m.state==='finished') status = `<span class="dr-chip">You played · <b>${m.score}</b> pts${m.pending?' (+'+m.pending+' pending)':''}${m.rank?' · rank <b>'+m.rank+'</b>':''}</span>`;
       else if(g.status==='closed' && g.winnerName) status = `<span class="dr-chip">🏆 Winner: <b>${escapeHtml(g.winnerName)}</b></span>`;
-      const extra = d.canHost ? `<span class="dr-chip">👥 <b>${g.audienceCount==null?'Everyone':g.audienceCount+' selected'}</b></span><span class="dr-chip"><b>${g.playersFinished}</b> finished${g.pendingGrades?' · <b>'+g.pendingGrades+'</b> to grade':''}</span>` : `<span class="dr-chip"><b>${g.playersFinished}</b> played</span>`;
+      const extra = d.canHost ? `<span class="dr-chip">${g.boardVisible?'👁 Leaderboard visible':'🔒 Leaderboard hidden'}</span><span class="dr-chip">👥 <b>${g.audienceCount==null?'Everyone':g.audienceCount+' selected'}</b></span><span class="dr-chip"><b>${g.playersFinished}</b> finished${g.pendingGrades?' · <b>'+g.pendingGrades+'</b> to grade':''}</span>` : `<span class="dr-chip"><b>${g.playersFinished}</b> played</span>`;
       return `<div class="gm-card">
         <div class="gm-card-main">
           <div class="gm-card-title">${escapeHtml(g.title)} ${gmBadge(g.status)}</div>
@@ -3847,7 +3847,11 @@
   }
   function renderGmDetail(){
     const d = gmDetail, g = d.game, host = gmData.canHost, el = gmEl();
-    const board = d.leaderboard.length ? `<table class="gm-table"><thead><tr><th>#</th><th>Player</th><th>Score</th><th>Time</th></tr></thead><tbody>${
+    const hidden = !g.boardVisible; // hidden from players; the owner still sees it
+    const hiddenForMe = hidden && !host;
+    const board = hiddenForMe
+      ? `<div class="notif-empty">🔒 The leaderboard is hidden for now — the host will reveal it.</div>${d.you ? `<div class="gm-you">Your result: <b>${d.you.score}</b> pts${d.you.pending?' (+'+d.you.pending+' pending)':''} · ${gmFmt(d.you.totalMs)}</div>` : ''}`
+      : d.leaderboard.length ? `<table class="gm-table"><thead><tr><th>#</th><th>Player</th><th>Score</th><th>Time</th></tr></thead><tbody>${
       d.leaderboard.map(r=>`<tr class="${r.mine?'gm-me':''}"><td>${gmMedal(r.rank)}</td><td>${escapeHtml(r.userName)}${r.mine?' (you)':''}</td><td><b>${r.score}</b>${r.pending?' <span class="gm-pending" title="Paragraph answers still to be graded">+'+r.pending+' pending</span>':''}</td><td>${gmFmt(r.totalMs)}</td></tr>`).join('')
     }</tbody></table><div class="dr-hint" style="margin-top:8px;">Ties are broken by total time. Paragraph answers are graded by the host, so scores can still rise while some show “pending”.</div>`
       : '<div class="notif-empty">Nobody has finished yet.</div>';
@@ -3856,7 +3860,7 @@
     if(host){
       tools = `<div class="gm-tools">
         ${g.status==='draft' ? '<button type="button" class="ghost-btn" data-gm="edit">✎ Edit questions</button><button type="button" class="primary-btn" data-gm="open">Open the game</button>' : ''}
-        ${g.status==='open' ? '<button type="button" class="primary-btn" data-gm="close">Close & announce winner</button>' : ''}
+        ${g.status==='open' ? '<button type="button" class="primary-btn" data-gm="close">Close the game</button>' : ''}
         <button type="button" class="ghost-btn" data-gm="delete">Delete</button>
       </div>`;
     } else if(gmData.canPlay && g.status==='open'){
@@ -3931,9 +3935,12 @@
           <div class="gm-meta">${g.questionCount} questions · ${gmTimeText(g.settings)}${g.prize?' · 🎁 Prize: <b>'+escapeHtml(g.prize)+'</b>':''}</div>
         </div>
       </div>
-      ${g.status==='closed' ? `<div class="gm-winner">🏆 ${g.winnerName?'Winner: <b>'+escapeHtml(g.winnerName)+'</b>'+(g.prize?' — wins '+escapeHtml(g.prize):''):'This game closed with no finishers.'}</div>` : ''}
+      ${g.status==='closed' && !hiddenForMe ? `<div class="gm-winner">🏆 ${g.winnerName?'Winner: <b>'+escapeHtml(g.winnerName)+'</b>'+(g.prize?' — wins '+escapeHtml(g.prize):''):'This game closed with no finishers.'}</div>` : ''}
       ${tools}
-      <div class="gm-section"><div class="gm-section-title">Leaderboard</div>${board}</div>
+      <div class="gm-section"><div class="gm-section-title">Leaderboard</div>
+        ${host ? `<div class="gm-board-ctl"><span>${hidden ? '🔒 <b>Hidden</b> from players — only you can see this.' : '👁 <b>Visible</b> to everyone invited.'}</span>
+          <button type="button" class="${hidden?'primary-btn':'ghost-btn'}" data-gm="toggleBoard">${hidden?'Show leaderboard to players':'Hide it again'}</button></div>` : ''}
+        ${board}</div>
       ${audience}${grading}${host && d.questions ? gmAnswersHtml(d) : ''}${review}
     </div>`;
     wireGames();
@@ -4094,7 +4101,7 @@
       <div class="gm-result-score"><b>${r.mcScore}</b> / ${r.mcQuestions} <span>multiple choice correct</span></div>
       ${r.pending ? `<div class="gm-meta">${r.pending} paragraph answer${r.pending===1?'':'s'} will be graded by the host — your final score may go up.</div>` : ''}
       <div class="gm-meta">Total time: ${gmFmt(r.totalMs)}</div>
-      <div class="gm-tools" style="justify-content:center;"><button type="button" class="primary-btn" data-gm="resultBoard" data-id="${escAttr(gmResult.gameId)}">See the leaderboard</button></div>
+      <div class="gm-tools" style="justify-content:center;"><button type="button" class="primary-btn" data-gm="resultBoard" data-id="${escAttr(gmResult.gameId)}">${(gmData.games.find(x=>x.id===gmResult.gameId)||{}).boardVisible ? 'See the leaderboard' : 'Back to the game'}</button></div>
     </div>`;
     wireGames();
   }
@@ -4183,6 +4190,17 @@
       return;
     }
     // owner actions on a game
+    if(act==='toggleBoard'){
+      const show = !gmDetail.game.boardVisible;
+      if(show && !confirm('Show the leaderboard' + (gmDetail.game.status==='closed' ? ' and the winner' : '') + ' to everyone invited? Paragraph answers you haven\'t graded yet will show as pending.')) return;
+      b.disabled = true;
+      try{
+        await api('PUT', '/api/games/' + encodeURIComponent(gmDetail.game.id) + '/board', {visible: show});
+        await loadGamesQuiet();
+        await openGmDetail(gmDetail.game.id);
+      }catch(e){ alert(e.message); b.disabled = false; }
+      return;
+    }
     if(act==='audteam' || act==='audall' || act==='audnone'){
       gmDetail.members.filter(m=> act==='audall' || (act==='audteam' && m.team===b.dataset.team)).forEach(m=>{
         if(act==='audnone' || b.dataset.on==='0') gmAud.ids.delete(m.id); else gmAud.ids.add(m.id);
@@ -4208,7 +4226,7 @@
       const who = gmDetail.audience ? gmDetail.audience.length + ' selected ' + (gmDetail.audience.length===1 ? 'person' : 'people') : 'everyone';
       const msg = act==='open'
         ? 'Open "' + g.title + '" to ' + who + ' now? Its questions and settings will be locked.'
-        : 'Close "' + g.title + '" and announce the winner? Make sure all paragraph answers are graded first — players can\'t finish after this.';
+        : 'Close "' + g.title + '"? Players can\'t finish after this, so grade the paragraph answers first. The leaderboard and winner stay hidden from players until you show them.';
       if(!confirm(msg)) return;
       try{
         const r = await api('POST', '/api/games/' + encodeURIComponent(g.id) + '/status', {status: act==='open' ? 'open' : 'closed'});
