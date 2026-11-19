@@ -692,6 +692,12 @@ function gameHead(g) {
   return { id: g.id, title: g.title, prize: g.prize, status: g.status, questionCount: g.questions.length, openedAt: g.openedAt, closedAt: g.closedAt, winnerName: g.winnerName, settings: gamesLib.settingsOf(g) };
 }
 
+// Who may see and play a game: `audience` is null for everyone, or the list
+// of member ids the owner picked (changeable at any time, even once the game
+// is open). The owner always sees everything. Someone who already played
+// stays on the leaderboard even if they're later taken off the list.
+const inAudience = (g, userId) => !Array.isArray(g.audience) || g.audience.includes(userId);
+
 function cleanGameFields(body) {
   const title = String(body.title == null ? '' : body.title).trim();
   const prize = String(body.prize == null ? '' : body.prize).trim();
@@ -706,13 +712,14 @@ app.get('/api/games', requireAuth, async (req, res) => {
     if (req.user.isViewer) throw new Error('FORBIDDEN');
     const host = isGameHost(req);
     const [games, plays] = await Promise.all([gamesReader.get(), gamePlaysReader.get()]);
-    const list = games.filter(g => host || g.status !== 'draft').map(g => {
+    const list = games.filter(g => host || (g.status !== 'draft' && inAudience(g, req.user.id))).map(g => {
       const gp = plays.filter(p => p.gameId === g.id);
       const board = gamesLib.leaderboard(g.questions, gp);
       const mine = host ? null : gp.find(p => p.userId === req.user.id);
       const mineRow = mine && mine.finishedAt ? board.find(r => r.playId === mine.id) : null;
       return Object.assign(gameHead(g), {
         createdAt: g.createdAt,
+        audienceCount: host ? (Array.isArray(g.audience) ? g.audience.length : null) : undefined, // null = everyone
         playersStarted: gp.length,
         playersFinished: board.length,
         pendingGrades: host ? board.reduce((s, r) => s + r.pending, 0) : undefined,
@@ -729,7 +736,7 @@ app.get('/api/games/:id', requireAuth, async (req, res) => {
     if (req.user.isViewer) throw new Error('FORBIDDEN');
     const host = isGameHost(req);
     const g = await findGame(req.params.id, true);
-    if (!g || (g.status === 'draft' && !host)) throw new Error('NOT_FOUND');
+    if (!g || (!host && (g.status === 'draft' || !inAudience(g, req.user.id)))) throw new Error('NOT_FOUND');
     const plays = (await readTab('GamePlays').catch(() => [])).filter(p => p.gameId === g.id);
     const board = gamesLib.leaderboard(g.questions, plays);
     const out = {
@@ -739,6 +746,11 @@ app.get('/api/games/:id', requireAuth, async (req, res) => {
     if (host) {
       out.questions = g.questions;
       out.submissions = plays.filter(p => p.finishedAt).map(p => ({ playId: p.id, userName: p.userName, answers: p.answers, grades: p.grades }));
+      // The people who could be invited (everyone who plays: no viewers), grouped by team on the client.
+      const [membersAll, teamsAll] = await Promise.all([readTab('Members'), getTeamsCached()]);
+      const teamName = id => (teamsAll.find(t => t.id === id) || {}).name || 'No team';
+      out.audience = Array.isArray(g.audience) ? g.audience : null; // null = everyone
+      out.members = membersAll.filter(m => !m.isViewer).map(m => ({ id: m.id, name: m.name, team: teamName(m.teamId) }));
     } else if (g.status === 'closed') {
       const mine = plays.find(p => p.userId === req.user.id && p.finishedAt);
       if (mine) out.review = g.questions.map(q => {
@@ -748,6 +760,29 @@ app.get('/api/games/:id', requireAuth, async (req, res) => {
     }
     res.set('Cache-Control', 'no-store');
     res.json(out);
+  } catch (e) { sendErr(res, e); }
+});
+
+// Owner chooses who can see/play a game: memberIds = null for everyone, or
+// the list of people. Allowed in any status — e.g. open it to a few people
+// first and widen it later.
+app.put('/api/games/:id/audience', requireAuth, async (req, res) => {
+  try {
+    if (!isGameHost(req)) throw new Error('FORBIDDEN');
+    let audience = null;
+    if (req.body.memberIds !== null) {
+      if (!Array.isArray(req.body.memberIds)) throw new Error('BAD_REQUEST');
+      const valid = new Set((await readTab('Members')).filter(m => !m.isViewer).map(m => m.id));
+      audience = Array.from(new Set(req.body.memberIds)).filter(id => valid.has(id));
+    }
+    await updateTab('Games', rows => {
+      const g = rows.find(r => r.id === req.params.id);
+      if (!g) throw new Error('NOT_FOUND');
+      g.audience = audience;
+      return rows;
+    });
+    invalidateGames();
+    res.json({ ok: true, audienceCount: audience ? audience.length : null });
   } catch (e) { sendErr(res, e); }
 });
 
@@ -861,6 +896,7 @@ app.post('/api/games/:id/start', requireAuth, async (req, res) => {
     if (!canPlayGames(req)) throw new Error('FORBIDDEN');
     const g = await findGame(req.params.id, true);
     if (!g || g.status !== 'open') throw gamesLib.fail('This game is not open right now.');
+    if (!inAudience(g, req.user.id)) throw gamesLib.fail('This game is not open to you.');
     const playId = genId('gp');
     await updateTab('GamePlays', rows => {
       const mine = rows.find(r => r.gameId === g.id && r.userId === req.user.id);

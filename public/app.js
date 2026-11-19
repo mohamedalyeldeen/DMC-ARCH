@@ -3705,6 +3705,7 @@
   let gmPlay = null;          // the running attempt
   let gmResult = null;
   let gmMarks = {};           // owner's unsaved paragraph marks: 'playId|qid' -> 0|1|null
+  let gmAud = null;           // owner's audience editor for the open game: {mode:'all'|'selected', ids:Set, dirty}
   let gmTimer = null;
   const gmEl = ()=> document.getElementById('gamesView');
   const gmStoreKey = id => 'click.game.' + id + '.' + ((session && session.id) || '');
@@ -3721,7 +3722,7 @@
   }
   function clearGames(){
     clearInterval(gmTimer); gmTimer = null;
-    gmData = null; gmLoaded = false; gmScreen = 'list'; gmDetail = null; gmEditor = null; gmPlay = null; gmResult = null; gmMarks = {};
+    gmData = null; gmLoaded = false; gmScreen = 'list'; gmDetail = null; gmEditor = null; gmPlay = null; gmResult = null; gmMarks = {}; gmAud = null;
     gmEl().innerHTML = '';
   }
   async function loadGames(){
@@ -3760,7 +3761,7 @@
       let status = '';
       if(m && m.state==='finished') status = `<span class="dr-chip">You played · <b>${m.score}</b> pts${m.pending?' (+'+m.pending+' pending)':''}${m.rank?' · rank <b>'+m.rank+'</b>':''}</span>`;
       else if(g.status==='closed' && g.winnerName) status = `<span class="dr-chip">🏆 Winner: <b>${escapeHtml(g.winnerName)}</b></span>`;
-      const extra = d.canHost ? `<span class="dr-chip"><b>${g.playersFinished}</b> finished${g.pendingGrades?' · <b>'+g.pendingGrades+'</b> to grade':''}</span>` : `<span class="dr-chip"><b>${g.playersFinished}</b> played</span>`;
+      const extra = d.canHost ? `<span class="dr-chip">👥 <b>${g.audienceCount==null?'Everyone':g.audienceCount+' selected'}</b></span><span class="dr-chip"><b>${g.playersFinished}</b> finished${g.pendingGrades?' · <b>'+g.pendingGrades+'</b> to grade':''}</span>` : `<span class="dr-chip"><b>${g.playersFinished}</b> played</span>`;
       return `<div class="gm-card">
         <div class="gm-card-main">
           <div class="gm-card-title">${escapeHtml(g.title)} ${gmBadge(g.status)}</div>
@@ -3790,6 +3791,7 @@
     try{
       gmDetail = await api('GET', '/api/games/' + encodeURIComponent(id));
       gmScreen = 'detail'; gmMarks = {};
+      gmAud = gmDetail.members ? {mode: gmDetail.audience ? 'selected' : 'all', ids: new Set(gmDetail.audience || []), dirty: false} : null;
       renderGmDetail();
     }catch(e){ alert(e.message); gmGoList(); }
   }
@@ -3814,6 +3816,27 @@
     } else if(gmData.canPlay && g.status==='open'){
       const mine = gmData.games.find(x=>x.id===g.id);
       if(mine && !mine.mine) tools = `<div class="gm-tools"><button type="button" class="primary-btn" data-gm="play" data-id="${escAttr(g.id)}">▶ Play now</button></div>`;
+    }
+
+    let audience = '';
+    if(host && gmAud && d.members){
+      const byTeam = {};
+      d.members.forEach(m=>{ (byTeam[m.team] = byTeam[m.team] || []).push(m); });
+      const selected = gmAud.mode==='selected';
+      const teams = Object.keys(byTeam).sort((a,b)=>a.localeCompare(b)).map(t=>`<div class="gm-aud-team">
+          <div class="gm-aud-team-head"><b>${escapeHtml(t)}</b>
+            <span><button type="button" class="gm-link" data-gm="audteam" data-team="${escAttr(t)}" data-on="1">all</button> · <button type="button" class="gm-link" data-gm="audteam" data-team="${escAttr(t)}" data-on="0">none</button></span></div>
+          ${byTeam[t].sort((a,b)=>a.name.localeCompare(b.name)).map(m=>`<label class="gm-aud-m"><input type="checkbox" data-gm-aud="${escAttr(m.id)}" ${gmAud.ids.has(m.id)?'checked':''}> ${escapeHtml(m.name)}</label>`).join('')}
+        </div>`).join('');
+      audience = `<div class="gm-section"><div class="gm-section-title">Who can play</div>
+        <div class="dr-hint">People who aren't invited don't see this game at all. You can change this any time — even while the game is open — for example to open it to a few people first and add more later.</div>
+        <label class="gm-aud-mode"><input type="radio" name="gmAudMode" value="all" ${selected?'':'checked'}> Everyone</label>
+        <label class="gm-aud-mode"><input type="radio" name="gmAudMode" value="selected" ${selected?'checked':''}> Only the people I choose</label>
+        ${selected ? `<div class="gm-aud-list">${teams || '<div class="notif-empty">No team members yet.</div>'}</div>
+        <div class="gm-aud-foot"><span id="gmAudCount">${gmAud.ids.size} of ${d.members.length} selected</span>
+          <button type="button" class="gm-link" data-gm="audall">select everyone</button> · <button type="button" class="gm-link" data-gm="audnone">clear</button></div>` : ''}
+        <div class="gm-tools"><button type="button" class="primary-btn" data-gm="saveAud" ${gmAud.dirty?'':'disabled'}>Save audience</button>${gmAud.dirty?'<span class="gm-note">Unsaved changes</span>':''}</div>
+      </div>`;
     }
 
     let grading = '';
@@ -3865,7 +3888,7 @@
       ${g.status==='closed' ? `<div class="gm-winner">🏆 ${g.winnerName?'Winner: <b>'+escapeHtml(g.winnerName)+'</b>'+(g.prize?' — wins '+escapeHtml(g.prize):''):'This game closed with no finishers.'}</div>` : ''}
       ${tools}
       <div class="gm-section"><div class="gm-section-title">Leaderboard</div>${board}</div>
-      ${grading}${review}
+      ${audience}${grading}${review}
     </div>`;
     wireGames();
   }
@@ -4049,6 +4072,16 @@
     el.querySelectorAll('[data-gm-text]').forEach(t=> t.addEventListener('input', ()=>{ gmEditor.questions[+t.dataset.gmText].text = t.value; }));
     el.querySelectorAll('[data-gm-ans]').forEach(t=> t.addEventListener('input', ()=>{ gmEditor.questions[+t.dataset.gmAns].answer = t.value; }));
     el.querySelectorAll('[data-gm-opt]').forEach(t=> t.addEventListener('input', ()=>{ const [i,oi] = t.dataset.gmOpt.split(':').map(Number); gmEditor.questions[i].options[oi] = t.value; }));
+    el.querySelectorAll('[name=gmAudMode]').forEach(r=> r.addEventListener('change', ()=>{
+      gmAud.mode = r.value; gmAud.dirty = true;
+      const y = window.scrollY; renderGmDetail(); window.scrollTo(0, y);
+    }));
+    el.querySelectorAll('[data-gm-aud]').forEach(c=> c.addEventListener('change', ()=>{
+      if(c.checked) gmAud.ids.add(c.dataset.gmAud); else gmAud.ids.delete(c.dataset.gmAud);
+      gmAud.dirty = true;
+      const cnt = document.getElementById('gmAudCount'); if(cnt) cnt.textContent = gmAud.ids.size + ' of ' + gmDetail.members.length + ' selected';
+      const save = el.querySelector('[data-gm=saveAud]'); if(save) save.disabled = false;
+    }));
     el.querySelectorAll('[data-gm-correct]').forEach(t=> t.addEventListener('change', ()=>{ const [i,oi] = t.dataset.gmCorrect.split(':').map(Number); gmEditor.questions[i].correct = oi; }));
     el.querySelectorAll('[data-gm]').forEach(b=> b.addEventListener('click', ()=> gmAction(b)));
   }
@@ -4096,10 +4129,31 @@
       return;
     }
     // owner actions on a game
+    if(act==='audteam' || act==='audall' || act==='audnone'){
+      gmDetail.members.filter(m=> act==='audall' || (act==='audteam' && m.team===b.dataset.team)).forEach(m=>{
+        if(act==='audnone' || b.dataset.on==='0') gmAud.ids.delete(m.id); else gmAud.ids.add(m.id);
+      });
+      if(act==='audnone') gmAud.ids.clear();
+      gmAud.dirty = true;
+      const y = window.scrollY; renderGmDetail(); window.scrollTo(0, y);
+      return;
+    }
+    if(act==='saveAud'){
+      if(gmAud.mode==='selected' && !gmAud.ids.size && !confirm('Nobody is selected, so nobody will be able to see or play this game. Save anyway?')) return;
+      b.disabled = true;
+      try{
+        await api('PUT', '/api/games/' + encodeURIComponent(gmDetail.game.id) + '/audience', {memberIds: gmAud.mode==='all' ? null : Array.from(gmAud.ids)});
+        await loadGamesQuiet();
+        await openGmDetail(gmDetail.game.id);
+      }catch(e){ alert(e.message); b.disabled = false; }
+      return;
+    }
     if(act==='open' || act==='close'){
       const g = gmDetail.game;
+      if(act==='open' && gmAud && gmAud.dirty){ alert('You have unsaved changes to "Who can play" — save them first.'); return; }
+      const who = gmDetail.audience ? gmDetail.audience.length + ' selected ' + (gmDetail.audience.length===1 ? 'person' : 'people') : 'everyone';
       const msg = act==='open'
-        ? 'Open "' + g.title + '" to everyone now? Its questions will be locked.'
+        ? 'Open "' + g.title + '" to ' + who + ' now? Its questions and settings will be locked.'
         : 'Close "' + g.title + '" and announce the winner? Make sure all paragraph answers are graded first — players can\'t finish after this.';
       if(!confirm(msg)) return;
       try{
